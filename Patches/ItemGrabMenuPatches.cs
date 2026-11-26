@@ -71,6 +71,9 @@ namespace AndroidConsolizer.Patches
         private static int _swapSourceSlot = -1;
         private static bool _swapFromChest = true; // true = item came from chest, false = from player inv
 
+        /// <summary>Read-only access to the active displacement-swap item for BundleIconPulsePatches.</summary>
+        internal static Item SwapHeldItem => _swapHeldItem;
+
         // Cached reflection fields for InventoryMenu sidebar buttons
         private static FieldInfo _organizeButtonField;
         private static FieldInfo _trashCanField;

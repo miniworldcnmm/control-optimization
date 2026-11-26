@@ -227,6 +227,7 @@ namespace AndroidConsolizer
             Patches.RightStickCursorPatches.Apply(harmony, this.Monitor);
             Patches.BootDiagnosticPatches.ApplyAdditionalPatches(harmony, this.Monitor);
             Patches.ItemStowPatches.Apply(harmony, this.Monitor);
+            Patches.BundleIconPulsePatches.Apply(harmony, this.Monitor);
 
             // Register events
             helper.Events.GameLoop.GameLaunched += this.OnGameLaunched;
@@ -377,6 +378,9 @@ namespace AndroidConsolizer
             {
                 Patches.GameMenuPatches.OnGameMenuOpened(newGameMenu);
             }
+
+            // Reset/refresh Community Center bundle icon pulsing across menu transitions
+            Patches.BundleIconPulsePatches.OnMenuChanged(e.OldMenu, e.NewMenu);
         }
 
         /// <summary>Raised at start of each tick, BEFORE Game.Update(). Enforces our trigger

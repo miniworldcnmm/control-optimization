@@ -1,7 +1,7 @@
 # 背包、箱子与出货箱主机操控
 
 - **产品生命周期**：`active`
-- **关联代码**：`Patches/InventoryManagementPatches.cs`、`Patches/InventoryPagePatches.cs`、`Patches/ItemGrabMenuPatches.cs`、`Patches/ShippingBinPatches.cs`、`Patches/FishingRodPatches.cs`、`Patches/SlingshotPatches.cs`、`ModEntry.cs`、`ModConfig.cs`
+- **关联代码**：`Patches/InventoryManagementPatches.cs`、`Patches/InventoryPagePatches.cs`、`Patches/ItemGrabMenuPatches.cs`、`Patches/BundleIconPulsePatches.cs`、`Patches/ShippingBinPatches.cs`、`Patches/FishingRodPatches.cs`、`Patches/SlingshotPatches.cs`、`ModEntry.cs`、`ModConfig.cs`
 
 ## 1. 目的和用户可见行为
 
@@ -12,6 +12,7 @@
    - **Y 键**：从堆叠中抓起单个物品，长按持续逐个抓取。
    - **X 键**：整理背包，同时强制拦截 Android 原版原始 X 键误删槽位物品的缺陷。
    - **视觉与提示**：手持物品跟随当前光标槽位渲染；悬停任意物品及装备槽时显示完整属性提示；若抓起物品期间触碰屏幕，安全退回原槽位；在整理与垃圾桶之间的丢弃区支持主动丢弃。
+   - **社区中心献祭书跳动提示**：手柄模式下，在背包（`GameMenu` / `InventoryPage`）或箱子（`ItemGrabMenu`）中将光标停留在可献祭物品上（或抓起该物品悬停于空位/丢弃区）时，自动按原版逻辑检测未完成的社区中心/失踪收集包并触发社区中心金色卷轴图标（`junimoNoteIcon`）持续脉冲跳动；移开、切页或切换至触屏时自动恢复静止。
 2. **鱼竿鱼饵/鱼钩与弹弓弹药装卸**：
    - 在背包页对鱼饵/鱼钩或弹弓弹药按 **A** 选中，再对鱼竿或弹弓按 **Y** 挂载；未选中耗材时直接对鱼竿/弹弓按 **Y** 卸载（鱼竿先卸鱼饵再卸鱼钩）并将卸下物置入光标。
 3. **主机风格箱子操控**：
@@ -44,7 +45,15 @@
   - 统一驱动 A 整组快传、Y 单件长按快传、X 整理、RB 跳至 `FillOutStacks`、满格互换状态机、7×3 调色板网格导航、手指光标绘制、自适应屏幕的悬浮提示定位，以及退出时的状态清理（`OnMenuClosed`）。
   - 存/取物品时触发 `behaviorFunction` / `behaviorOnItemGrab` 等原版钩子，确保任务进度、献祭钩子与容器源移除一致生效。
 
-### 2.3 出货箱（`ShippingBinPatches`）
+### 2.3 社区中心献祭图标跳动（`BundleIconPulsePatches`）
+
+- Android 原版依赖触屏按住事件（`receiveLeftClick` / `leftClickHeld`）触发献祭物品检测，而主机模式下按 A 已被接管为抓放/快传且每帧 `Game1.Update` 会重置 `GameMenu.bundleItemHovered = false`，导致献祭图标不再跳动。
+- `BundleIconPulsePatches` 使用 `AccessTools.DeclaredMethod` Patch `GameMenu` 与 `ItemGrabMenu` 的 `update` / `draw` Prefix，仅在 `Game1.options.gamepadControls` 为真时生效：
+  - 按当前吸附组件解析背包槽位、箱子槽位及光标/满格互换手持物品，调用原版 `CommunityCenter.couldThisIngredienteBeUsedInABundle(Object)`（兼容品质要求、类别要求、混搭收集包及失踪收集包）判断是否为未完成收集包所需物品。
+  - 通过反射同时兼容 Android 的 `GameMenu.junimoNoteIcon` 与 PC/容器的 `InventoryPage.junimoNoteIcon` / `ItemGrabMenu.junimoNoteIcon` 及对应 `junimoNotePulser`，每帧同步 `GameMenu.bundleItemHovered` 并以与原版一致的正弦曲线（`baseScale + sin(ms / 100) * (baseScale / 16)`）驱动图标脉冲缩放。
+  - 菜单切换时通过 `ModEntry.OnMenuChanged` → `BundleIconPulsePatches.OnMenuChanged` 复位动画状态，并在直接打开箱子时刷新 `CommunityCenter.refreshBundlesIngredientsInfo()`，避免混搭收集包读档后首次开箱数据未刷新。
+
+### 2.4 出货箱（`ShippingBinPatches`）
 
 - Patch `ItemGrabMenu.receiveGamePadButton`，严格校验菜单来源确认为出货箱（排除衣柜、鱼缸等其他商店/储物容器），沿用游戏原生出货流处理 A 整组 / Y 单件出货并更新“上次出货”记录。
 
@@ -65,6 +74,7 @@
 
 - 在背包中测试 A 抓放/互换、Y 单件与长按拆分、X 整理（确认绝不会删除当前格物品）、装备槽穿脱与提示、鱼竿装卸鱼饵/鱼钩、弹弓装卸弹药。
 - 在普通箱子、自动采集器、鱼缸、衣柜、出货箱中分别测试 A/Y/X/RB、侧边栏导航、7×3 调色板、满格互换与关闭按钮退出，确认无物品复制或丢失。
+- 在未完成社区中心献祭的存档中，用手柄在背包和箱子里将光标移至可献祭物品（含品质要求如金星作物）、非献祭物品、工具及空槽上，验证社区中心金色卷轴图标在可献祭物品上平滑脉冲跳动、移开/转移后立刻停止，且切换回触屏模式不受影响。
 
 ## 6. 已知限制与防回归说明
 
