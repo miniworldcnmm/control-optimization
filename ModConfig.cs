@@ -5,6 +5,9 @@ namespace AndroidConsolizer
     /// <summary>The mod configuration model.</summary>
     public class ModConfig
     {
+        /// <summary>Display language: Auto (game language), zh, or en.</summary>
+        public string Language { get; set; } = "Auto";
+
         /*********
         ** Controller Settings
         *********/
@@ -83,12 +86,9 @@ namespace AndroidConsolizer
         public bool EnableFurnitureDebounce { get; set; } = true;
 
         /// <summary>
-        /// Console-style two-press geode breaking at Clint. First A/X places the
-        /// selected geode visibly on the anvil; second A/X starts the crack. B
-        /// with anvil occupied cancels the placement (instead of closing).
-        /// Vanilla Android uses one-press X that places + cracks atomically with
-        /// no "geode on anvil" visual; A toggles a tooltip. Disable to restore
-        /// vanilla behaviour.
+        /// Console-style geode breaking at Clint. Press A once to place and
+        /// crack the selected geode, and show its tooltip automatically.
+        /// Disable to restore Android's X-to-crack and A-to-toggle-tooltip controls.
         /// </summary>
         public bool EnableConsoleGeodeMenu { get; set; } = true;
 

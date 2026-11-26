@@ -45,15 +45,9 @@ namespace AndroidConsolizer.Patches
         private const int ScrollBottomPad = 16;
         private const int ScrollExtra = 50;
 
-        // Hardcoded labels — the PC string keys (Options_AlwaysShowToolHitLocation etc.) are absent
-        // from the Android content, so LoadString won't resolve them.
-        private const string LabelAlwaysShowToolHit = "Always show tool hit location";
-        private const string LabelHideToolHitMoving = "Hide tool hit location while moving";
-
         private const int OptAlwaysShowToolHit = 11;
         private const int OptHideToolHitMoving = 12;
 
-        private const string LabelZoom = "Zoom level";
         private const int OptZoom = 18;
 
         public static void Apply(Harmony harmony, IMonitor monitor)
@@ -117,8 +111,8 @@ namespace AndroidConsolizer.Patches
                 // after 34; zoom before the first audio slider (whichOption 1 = music volume), which is
                 // the top of the list after the touch options are hidden. Falls back to append if an
                 // anchor isn't present.
-                InsertAfter(options, 34, new OptionsCheckbox(LabelAlwaysShowToolHit, OptAlwaysShowToolHit));
-                InsertAfter(options, OptAlwaysShowToolHit, new OptionsCheckbox(LabelHideToolHitMoving, OptHideToolHitMoving));
+                InsertAfter(options, 34, new OptionsCheckbox(I18n.Get("ui.options.always-show-hit"), OptAlwaysShowToolHit));
+                InsertAfter(options, OptAlwaysShowToolHit, new OptionsCheckbox(I18n.Get("ui.options.hide-hit-while-moving"), OptHideToolHitMoving));
 
                 // Zoom slider. Self-syncs to desiredBaseZoomLevel*100 via setSliderToProperValue case 18.
                 // Mobile zoom actually ranges ~46-400% (default 150); the user wants the bar capped to the
@@ -127,7 +121,7 @@ namespace AndroidConsolizer.Patches
                 if (_optionsSliderCtor != null)
                 {
                     var zoom = (OptionsSlider)_optionsSliderCtor.Invoke(
-                        new object[] { LabelZoom, OptZoom, -1, -1, __instance.width });
+                        new object[] { I18n.Get("ui.options.zoom"), OptZoom, -1, -1, __instance.width });
                     AccessTools.Field(typeof(OptionsSlider), "sliderMinValue")?.SetValue(zoom, 50);
                     AccessTools.Field(typeof(OptionsSlider), "sliderMaxValue")?.SetValue(zoom, 200);
                     // The ctor's setSliderToProperValue ran while min/max were still the default

@@ -1449,12 +1449,9 @@ namespace AndroidConsolizer.Patches
                     return;
 
                 // Build compact sell price text
-                string priceText;
-                int total = sellPrice * sellItem.Stack;
-                if (sellItem.Stack > 1)
-                    priceText = $" {total}g ({sellPrice}g each)";
-                else
-                    priceText = $" {sellPrice}g";
+                string priceText = sellItem.Stack > 1
+                    ? I18n.Get("ui.shop.sell-stack", new { total = sellPrice * sellItem.Stack, price = sellPrice })
+                    : I18n.Get("ui.shop.sell-one", new { price = sellPrice });
 
                 // Manually position a small tooltip box near the selected inventory slot
                 // (drawToolTip/drawHoverText position at mouse cursor which is wrong on sell tab)
@@ -1481,6 +1478,7 @@ namespace AndroidConsolizer.Patches
                 // Keep on screen
                 if (boxX + boxW > Game1.uiViewport.Width)
                     boxX = snapped.bounds.Left - boxW - 8;
+                boxX = Math.Clamp(boxX, 0, Math.Max(0, Game1.uiViewport.Width - boxW));
                 if (boxY < 0)
                     boxY = 0;
                 if (boxY + boxH > Game1.uiViewport.Height)

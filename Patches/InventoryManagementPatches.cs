@@ -195,7 +195,7 @@ namespace AndroidConsolizer.Patches
                         false); // drawShadow
 
                     // Draw "Drop" text centered inside
-                    string dropText = "Drop";
+                    string dropText = I18n.Get("ui.inventory.drop");
                     var textSize = Game1.smallFont.MeasureString(dropText);
                     float textX = bounds.X + (bounds.Width - textSize.X) / 2f;
                     float textY = bounds.Y + (bounds.Height - textSize.Y) / 2f;
@@ -497,13 +497,17 @@ namespace AndroidConsolizer.Patches
                     float maxHalfWidth = 100; // conservative fallback
                     try
                     {
+                        string farmName = Game1.player.farmName.Value ?? "";
+                        string farm = Game1.content.LoadString("Strings\\UI:Inventory_FarmName", farmName);
+                        // Use the wider measurement to allow for platform-specific stats fonts.
+                        float farmWidth = Math.Max(Game1.smallFont.MeasureString(farm).X,
+                            Game1.dialogueFont.MeasureString(farm).X);
                         SpriteFont font = Game1.smallFont;
                         string name = Game1.player.Name ?? "";
-                        string farm = (Game1.player.farmName.Value ?? "") + " Farm";
                         string money = Utility.getNumberWithCommas(Game1.player.Money);
                         string earned = Utility.getNumberWithCommas((int)Game1.player.totalMoneyEarned);
                         maxHalfWidth = Math.Max(
-                            Math.Max(font.MeasureString(name).X, font.MeasureString(farm).X),
+                            Math.Max(font.MeasureString(name).X, farmWidth),
                             Math.Max(font.MeasureString(money).X, font.MeasureString(earned).X)) / 2f;
                     }
                     catch { }

@@ -44,3 +44,6 @@ release-notes/node_modules/
 release-notes/package-lock.json
 # Firefox-extracted Nexus cookies — contains session token, never commit
 release-notes/nexus-cookies.json
+
+# Local user/machine collaboration rules (untracked)
+/rule.md

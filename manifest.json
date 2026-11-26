@@ -2,7 +2,7 @@
     "Name": "Android Consolizer",
     "Author": "sonofskywalker3",
     "Version": "4.0.5",
-    "Description": "Brings console-style controller support to Android - 12-slot toolbar with row switching, shop purchasing, chest management, and inventory sorting.",
+    "Description": "为安卓版《星露谷物语》提供主机式手柄操作，支持中英文切换。",
     "UniqueID": "sonofskywalker3.AndroidConsolizer",
     "EntryDll": "AndroidConsolizer.dll",
     "MinimumApiVersion": "4.0.0",

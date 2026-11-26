@@ -29,6 +29,7 @@ namespace AndroidConsolizer
         /// <summary>Singleton instance so static patch helpers can poke instance state
         /// (e.g. currentToolbarRow) without resorting to reflection.</summary>
         private static ModEntry _instance;
+        private GmcmLocalization _gmcmLocalization;
 
         /// <summary>Set the active toolbar row from a static patch context. Clamps to
         /// the player's available row count and mirrors to FarmerPatches.CurrentToolbarRow
@@ -193,6 +194,7 @@ namespace AndroidConsolizer
             ModHelper = helper;
             ModMonitor = this.Monitor;
             Config = helper.ReadConfig<ModConfig>();
+            I18n.Init(helper.Translation, this.Monitor);
 
             // Apply Harmony patches
             var harmony = new Harmony(this.ModManifest.UniqueID);
@@ -255,6 +257,8 @@ namespace AndroidConsolizer
         /// <summary>Raised after the game is launched.</summary>
         private void OnGameLaunched(object sender, GameLaunchedEventArgs e)
         {
+            I18n.ReportFontFallback();
+
             // Register with Generic Mod Config Menu if available
             this.RegisterConfigMenu();
         }
@@ -309,6 +313,7 @@ namespace AndroidConsolizer
 
         private void OnMenuChanged(object sender, StardewModdingAPI.Events.MenuChangedEventArgs e)
         {
+            I18n.ReportFontFallback();
             // #18: When the museum donation menu closes, restore the SnappyMenus value
             // we forced on while it was open. Guarded inside the patch, so this is a
             // no-op for rearrange-mode MuseumMenu closes (we never forced the flag there).
@@ -400,6 +405,7 @@ namespace AndroidConsolizer
         /// <summary>Raised every game tick. Used to enforce toolbar row locking and handle triggers.</summary>
         private void OnUpdateTicked(object sender, UpdateTickedEventArgs e)
         {
+            this._gmcmLocalization?.Update();
             // #25 diagnostic (VerboseLogging-gated): once-per-tick charge-state snapshot while an
             // upgraded Hoe/Watering Can is mid-charge, so the move-while-charging fix can be
             // verified from the log without a playtest.
@@ -1068,105 +1074,50 @@ namespace AndroidConsolizer
         /// <summary>Generate the controls display text based on current layout and style.</summary>
         private string GetControlsDisplay()
         {
-            if (Config?.EnableButtonRemapping == false)
-            {
-                return "Button remapping is disabled.\nAll buttons use Android default mapping.\n" +
-                       "(Enable Button Remapping above to customize)";
-            }
+            var localization = this._gmcmLocalization;
+            if (!localization.GetValue(nameof(ModConfig.EnableButtonRemapping), Config.EnableButtonRemapping))
+                return I18n.EnsureRenderable(localization.GetText("controls.remapping-disabled").Replace("\n", " \n "));
 
-            var layout = Config?.ControllerLayout ?? ControllerLayout.Switch;
-            var style = Config?.ControlStyle ?? ControlStyle.Switch;
+            var layout = localization.GetChoice(nameof(ModConfig.ControllerLayout), Config.ControllerLayout);
+            var style = localization.GetChoice(nameof(ModConfig.ControlStyle), Config.ControlStyle);
+            bool playStation = layout == ControllerLayout.PlayStation;
+            bool switchLayout = layout == ControllerLayout.Switch;
+            bool swapAB = (layout == ControllerLayout.Xbox || playStation) != (style == ControlStyle.Xbox);
 
-            // Determine button labels based on layout
-            string aLabel, bLabel, xLabel, yLabel;
+            string a = localization.GetText(playStation ? "controls.button.cross" : "controls.button.a");
+            string b = localization.GetText(playStation ? "controls.button.circle" : "controls.button.b");
+            string x = localization.GetText(playStation ? "controls.button.square" : "controls.button.x");
+            string y = localization.GetText(playStation ? "controls.button.triangle" : "controls.button.y");
 
-            if (layout == ControllerLayout.PlayStation)
-            {
-                aLabel = "Cross"; bLabel = "Circle"; xLabel = "Square"; yLabel = "Triangle";
-            }
-            else
-            {
-                aLabel = "A"; bLabel = "B"; xLabel = "X"; yLabel = "Y";
-            }
+            string confirm = localization.GetText("controls.action.confirm");
+            string cancel = localization.GetText("controls.action.cancel");
+            string useTool = localization.GetText("controls.action.tool");
+            string craft = localization.GetText("controls.action.craft");
+            string menuConfirm = localization.GetText("controls.action.menu-confirm");
+            string back = localization.GetText("controls.action.back");
+            string sort = localization.GetText("controls.action.sort");
+            string stack = localization.GetText("controls.action.stack");
 
-            // A/B swap is based on layout vs style mismatch
-            bool isXboxLayout = layout == ControllerLayout.Xbox || layout == ControllerLayout.PlayStation;
-            bool isXboxStyle = style == ControlStyle.Xbox;
-            bool swapAB = isXboxLayout != isXboxStyle;
+            bool journal = localization.GetValue(nameof(ModConfig.EnableJournalButton), Config.EnableJournalButton);
+            bool dpadMode = localization.GetValue(nameof(ModConfig.UseBumpersInsteadOfTriggers), Config.UseBumpersInsteadOfTriggers);
+            string toolbar = localization.GetText(dpadMode ? "controls.toolbar.dpad" : "controls.toolbar.triggers");
 
-            // Determine what A and B do based on style
-            string aGameplay, bGameplay, aMenu, bMenu;
-
-            if (swapAB)
-            {
-                aGameplay = "Cancel / Open Inventory";
-                bGameplay = "Confirm / Talk / Pickup";
-                aMenu = "Back / Close Menu";
-                bMenu = "Confirm / Purchase / Ship Stack";
-            }
-            else
-            {
-                aGameplay = "Confirm / Talk / Pickup";
-                bGameplay = "Cancel / Open Inventory";
-                aMenu = "Confirm / Purchase / Ship Stack";
-                bMenu = "Back / Close Menu";
-            }
-
-            // X/Y functions are ALWAYS positional based on layout:
-            // Left button = Use Tool (gameplay), Add to Stacks (menu)
-            // Top button = Crafting Menu (gameplay), Sort Inventory (menu)
-            string xGameplay, yGameplay, xMenu, yMenu;
-
-            if (layout == ControllerLayout.Switch)
-            {
-                // Switch: X is top, Y is left
-                xGameplay = "Open Crafting Menu";
-                yGameplay = "Use Tool";
-                xMenu = "Sort Inventory";
-                yMenu = "Add to Stacks / Ship One";
-            }
-            else
-            {
-                // Xbox/PS: X is left, Y is top
-                xGameplay = "Use Tool";
-                yGameplay = "Open Crafting Menu";
-                xMenu = "Add to Stacks / Ship One";
-                yMenu = "Sort Inventory";
-            }
-
-            // Toolbar controls depend on D-pad mode
-            string toolbarControls;
-            if (Config?.UseBumpersInsteadOfTriggers == true)
-            {
-                toolbarControls = "--- TOOLBAR (D-Pad Mode) ---\n" +
-                                  "D-Pad Up/Down - Switch Rows\n" +
-                                  "LB/RB/D-Pad L/R - Move Left/Right";
-            }
-            else
-            {
-                toolbarControls = "--- TOOLBAR ---\n" +
-                                  "LB/RB - Switch Rows\n" +
-                                  "LT/RT - Move Left/Right";
-            }
-
-            // Start button function
-            string startGameplay = Config?.EnableJournalButton == true
-                ? "Open Inventory (tap) / Open Journal (hold)"
-                : "Open Inventory";
-
-            // Format with consistent ABXY order for both sections
-            return $"--- GAMEPLAY ---\n" +
-                   $"{aLabel} - {aGameplay}\n" +
-                   $"{bLabel} - {bGameplay}\n" +
-                   $"{xLabel} - {xGameplay}\n" +
-                   $"{yLabel} - {yGameplay}\n" +
-                   $"Start - {startGameplay}\n\n" +
-                   $"--- MENUS ---\n" +
-                   $"{aLabel} - {aMenu}\n" +
-                   $"{bLabel} - {bMenu}\n" +
-                   $"{xLabel} - {xMenu}\n" +
-                   $"{yLabel} - {yMenu}\n\n" +
-                   toolbarControls;
+            string controls = string.Join(" \n ",
+                localization.GetText("controls.heading.gameplay"),
+                $"{a} - {(swapAB ? cancel : confirm)}",
+                $"{b} - {(swapAB ? confirm : cancel)}",
+                $"{x} - {(switchLayout ? craft : useTool)}",
+                $"{y} - {(switchLayout ? useTool : craft)}",
+                localization.GetText(journal ? "controls.start.journal" : "controls.start.inventory"),
+                "",
+                localization.GetText("controls.heading.menus"),
+                $"{a} - {(swapAB ? back : menuConfirm)}",
+                $"{b} - {(swapAB ? menuConfirm : back)}",
+                $"{x} - {(switchLayout ? sort : stack)}",
+                $"{y} - {(switchLayout ? stack : sort)}",
+                "",
+                toolbar.Replace("\n", " \n "));
+            return I18n.EnsureRenderable(controls);
         }
 
         /// <summary>Register the config menu with GMCM.</summary>
@@ -1180,338 +1131,382 @@ namespace AndroidConsolizer
                 return;
             }
 
+            var localization = new GmcmLocalization(this.ModManifest);
+            this._gmcmLocalization = localization;
+            var manifest = localization.Manifest;
+
             // Register mod
             configMenu.Register(
-                mod: this.ModManifest,
-                reset: () => Config = new ModConfig(),
+                mod: manifest,
+                reset: () =>
+                {
+                    localization.Clear();
+                    Config = new ModConfig();
+                },
                 save: () =>
                 {
                     this.Helper.WriteConfig(Config);
                     this.ApplyItemStowing();
+                    localization.Clear();
                 }
             );
 
+            localization.RegisterFieldChanges(this.Helper.ModRegistry.GetApi("spacechase0.GenericModConfigMenu"));
+
             // Version Display - AT TOP
             configMenu.AddSectionTitle(
-                mod: this.ModManifest,
-                text: () => $"Android Consolizer v{this.ModManifest.Version}"
+                mod: manifest,
+                text: () => localization.GetText("gmcm.version", new { version = this.ModManifest.Version })
+            );
+
+            configMenu.AddTextOption(
+                mod: manifest,
+                name: () => localization.GetText("gmcm.language.name"),
+                tooltip: () => localization.GetText("gmcm.language.tooltip"),
+                getValue: () => localization.GetValue(nameof(ModConfig.Language), I18n.Language),
+                setValue: value =>
+                {
+                    Config.Language = value;
+                    I18n.ReportFontFallback();
+                },
+                allowedValues: new[] { "Auto", "zh", "en" },
+                formatAllowedValue: value => value switch
+                {
+                    "zh" => localization.GetText("gmcm.language.zh"),
+                    "en" => localization.GetText("gmcm.language.en"),
+                    _ => localization.GetText("gmcm.language.auto")
+                },
+                fieldId: nameof(ModConfig.Language)
             );
 
             // Controller Settings
             configMenu.AddSectionTitle(
-                mod: this.ModManifest,
-                text: () => "Controller Settings"
+                mod: manifest,
+                text: () => localization.GetText("gmcm.section.controller")
             );
 
             configMenu.AddBoolOption(
-                mod: this.ModManifest,
-                name: () => "Button Remapping",
-                tooltip: () => "Remap A/B and X/Y buttons based on your controller layout and control style.\nWhen disabled, all buttons pass through unmodified (Android default mapping).",
-                getValue: () => Config.EnableButtonRemapping,
-                setValue: value => Config.EnableButtonRemapping = value
+                mod: manifest,
+                name: () => localization.GetText("gmcm.button-remapping.name"),
+                tooltip: () => localization.GetText("gmcm.button-remapping.tooltip"),
+                getValue: () => localization.GetValue(nameof(ModConfig.EnableButtonRemapping), Config.EnableButtonRemapping),
+                setValue: value => Config.EnableButtonRemapping = value,
+                fieldId: nameof(ModConfig.EnableButtonRemapping)
             );
 
             configMenu.AddTextOption(
-                mod: this.ModManifest,
-                name: () => "Controller Layout",
-                tooltip: () => "The physical button layout of your controller. Requires Button Remapping.\n" +
-                              "Switch/Odin: A=right, B=bottom, X=top, Y=left\n" +
-                              "Xbox: A=bottom, B=right, X=left, Y=top\n" +
-                              "PlayStation: Same as Xbox (Cross=A, Circle=B, Square=X, Triangle=Y)",
-                getValue: () => Config.ControllerLayout.ToString(),
+                mod: manifest,
+                name: () => localization.GetText("gmcm.controller-layout.name"),
+                tooltip: () => localization.GetText("gmcm.controller-layout.tooltip"),
+                getValue: () => localization.GetValue(nameof(ModConfig.ControllerLayout), Config.ControllerLayout.ToString()),
                 setValue: value => Config.ControllerLayout = Enum.Parse<ControllerLayout>(value),
                 allowedValues: new[] { "Switch", "Xbox", "PlayStation" },
                 formatAllowedValue: value => value switch
                 {
-                    "Switch" => "Switch",
-                    "Xbox" => "Xbox",
-                    "PlayStation" => "PlayStation",
-                    _ => value
-                }
+                    "Switch" => localization.GetText("gmcm.layout.switch"),
+                    "Xbox" => localization.GetText("gmcm.layout.xbox"),
+                    _ => localization.GetText("gmcm.layout.playstation")
+                },
+                fieldId: nameof(ModConfig.ControllerLayout)
             );
 
             configMenu.AddTextOption(
-                mod: this.ModManifest,
-                name: () => "Control Style",
-                tooltip: () => "Which console's control scheme you want. Requires Button Remapping.\n" +
-                              "Switch: Right=confirm, Bottom=cancel\n" +
-                              "Xbox/PS: Bottom=confirm, Right=cancel",
-                getValue: () => Config.ControlStyle.ToString(),
+                mod: manifest,
+                name: () => localization.GetText("gmcm.control-style.name"),
+                tooltip: () => localization.GetText("gmcm.control-style.tooltip"),
+                getValue: () => localization.GetValue(nameof(ModConfig.ControlStyle), Config.ControlStyle.ToString()),
                 setValue: value => Config.ControlStyle = Enum.Parse<ControlStyle>(value),
                 allowedValues: new[] { "Switch", "Xbox" },
                 formatAllowedValue: value => value switch
                 {
-                    "Switch" => "Switch style",
-                    "Xbox" => "Xbox/PS style",
-                    _ => value
-                }
+                    "Xbox" => localization.GetText("gmcm.style.xbox"),
+                    _ => localization.GetText("gmcm.style.switch")
+                },
+                fieldId: nameof(ModConfig.ControlStyle)
             );
 
             // Button Controls Display (dynamic based on layout/style)
             configMenu.AddSectionTitle(
-                mod: this.ModManifest,
-                text: () => "Your Controls"
+                mod: manifest,
+                text: () => localization.GetText("gmcm.section.controls")
             );
 
             configMenu.AddParagraph(
-                mod: this.ModManifest,
-                text: () => "(Save and reopen this menu to see updated controls)"
+                mod: manifest,
+                text: () => localization.GetText("gmcm.controls.refresh")
             );
 
             configMenu.AddParagraph(
-                mod: this.ModManifest,
+                mod: manifest,
                 text: () => GetControlsDisplay()
             );
 
             // Feature Toggles
             configMenu.AddSectionTitle(
-                mod: this.ModManifest,
-                text: () => "Feature Toggles"
+                mod: manifest,
+                text: () => localization.GetText("gmcm.section.features")
             );
 
             configMenu.AddBoolOption(
-                mod: this.ModManifest,
-                name: () => "Console Chests",
-                tooltip: () => "Sort (X), fill stacks (Y), sidebar navigation, color picker, and A/Y item transfer in chests.",
-                getValue: () => Config.EnableConsoleChests,
-                setValue: value => Config.EnableConsoleChests = value
+                mod: manifest,
+                name: () => localization.GetText("gmcm.console-chests.name"),
+                tooltip: () => localization.GetText("gmcm.console-chests.tooltip"),
+                getValue: () => localization.GetValue(nameof(ModConfig.EnableConsoleChests), Config.EnableConsoleChests),
+                setValue: value => Config.EnableConsoleChests = value,
+                fieldId: nameof(ModConfig.EnableConsoleChests)
             );
 
             configMenu.AddBoolOption(
-                mod: this.ModManifest,
-                name: () => "Console Shops",
-                tooltip: () => "A button purchases items, LT/RT quantity selector, sell tab with A/Y, right stick scroll.",
-                getValue: () => Config.EnableConsoleShops,
-                setValue: value => Config.EnableConsoleShops = value
+                mod: manifest,
+                name: () => localization.GetText("gmcm.console-shops.name"),
+                tooltip: () => localization.GetText("gmcm.console-shops.tooltip"),
+                getValue: () => localization.GetValue(nameof(ModConfig.EnableConsoleShops), Config.EnableConsoleShops),
+                setValue: value => Config.EnableConsoleShops = value,
+                fieldId: nameof(ModConfig.EnableConsoleShops)
             );
 
             configMenu.AddBoolOption(
-                mod: this.ModManifest,
-                name: () => "Console Animal Menu",
-                tooltip: () => "Marnie's animal sell/move dialog: highlights a button on open and lets A confirm a sale (so animals can be sold with the controller).",
-                getValue: () => Config.EnableConsoleAnimalMenu,
-                setValue: value => Config.EnableConsoleAnimalMenu = value
+                mod: manifest,
+                name: () => localization.GetText("gmcm.console-animal-menu.name"),
+                tooltip: () => localization.GetText("gmcm.console-animal-menu.tooltip"),
+                getValue: () => localization.GetValue(nameof(ModConfig.EnableConsoleAnimalMenu), Config.EnableConsoleAnimalMenu),
+                setValue: value => Config.EnableConsoleAnimalMenu = value,
+                fieldId: nameof(ModConfig.EnableConsoleAnimalMenu)
             );
 
             configMenu.AddBoolOption(
-                mod: this.ModManifest,
-                name: () => "Console Toolbar",
-                tooltip: () => "12-slot fixed toolbar. LB/RB switches rows, LT/RT moves left/right within row.",
-                getValue: () => Config.EnableConsoleToolbar,
-                setValue: value => Config.EnableConsoleToolbar = value
+                mod: manifest,
+                name: () => localization.GetText("gmcm.console-toolbar.name"),
+                tooltip: () => localization.GetText("gmcm.console-toolbar.tooltip"),
+                getValue: () => localization.GetValue(nameof(ModConfig.EnableConsoleToolbar), Config.EnableConsoleToolbar),
+                setValue: value => Config.EnableConsoleToolbar = value,
+                fieldId: nameof(ModConfig.EnableConsoleToolbar)
             );
 
             configMenu.AddBoolOption(
-                mod: this.ModManifest,
-                name: () => "Pickup to Active Row",
-                tooltip: () => "Send new inventory items to the active toolbar row when there's space. " +
-                              "Forage, drops, gifts, and shop purchases never change your selected tool. " +
-                              "Furniture (bed, chair, etc.) gets auto-selected after pickup so you can re-place it.",
-                getValue: () => Config.EnablePickupToActiveRow,
-                setValue: value => Config.EnablePickupToActiveRow = value
+                mod: manifest,
+                name: () => localization.GetText("gmcm.pickup-to-active-row.name"),
+                tooltip: () => localization.GetText("gmcm.pickup-to-active-row.tooltip"),
+                getValue: () => localization.GetValue(nameof(ModConfig.EnablePickupToActiveRow), Config.EnablePickupToActiveRow),
+                setValue: value => Config.EnablePickupToActiveRow = value,
+                fieldId: nameof(ModConfig.EnablePickupToActiveRow)
             );
 
             configMenu.AddBoolOption(
-                mod: this.ModManifest,
-                name: () => "Console Inventory",
-                tooltip: () => "A picks up/places items, Y picks up one from stack, Y on fishing rod attaches/detaches bait and tackle.",
-                getValue: () => Config.EnableConsoleInventory,
-                setValue: value => Config.EnableConsoleInventory = value
+                mod: manifest,
+                name: () => localization.GetText("gmcm.console-inventory.name"),
+                tooltip: () => localization.GetText("gmcm.console-inventory.tooltip"),
+                getValue: () => localization.GetValue(nameof(ModConfig.EnableConsoleInventory), Config.EnableConsoleInventory),
+                setValue: value => Config.EnableConsoleInventory = value,
+                fieldId: nameof(ModConfig.EnableConsoleInventory)
             );
 
             configMenu.AddBoolOption(
-                mod: this.ModManifest,
-                name: () => "Console Shipping",
-                tooltip: () => "A ships full stack, Y ships one item from the shipping bin.",
-                getValue: () => Config.EnableConsoleShipping,
-                setValue: value => Config.EnableConsoleShipping = value
+                mod: manifest,
+                name: () => localization.GetText("gmcm.console-shipping.name"),
+                tooltip: () => localization.GetText("gmcm.console-shipping.tooltip"),
+                getValue: () => localization.GetValue(nameof(ModConfig.EnableConsoleShipping), Config.EnableConsoleShipping),
+                setValue: value => Config.EnableConsoleShipping = value,
+                fieldId: nameof(ModConfig.EnableConsoleShipping)
             );
 
             configMenu.AddBoolOption(
-                mod: this.ModManifest,
-                name: () => "Enable Right-Stick Cursor",
-                tooltip: () => "Right stick moves an on-screen cursor that aims your tools, matching Switch. " +
-                              "Auto-hides after a few seconds of no input, reverting tools to the tile you're facing. " +
-                              "Turn off to keep the right stick from moving the cursor (no drift).",
-                getValue: () => Config.EnableRightStickCursor,
-                setValue: value => Config.EnableRightStickCursor = value
+                mod: manifest,
+                name: () => localization.GetText("gmcm.right-stick-cursor.name"),
+                tooltip: () => localization.GetText("gmcm.right-stick-cursor.tooltip"),
+                getValue: () => localization.GetValue(nameof(ModConfig.EnableRightStickCursor), Config.EnableRightStickCursor),
+                setValue: value => Config.EnableRightStickCursor = value,
+                fieldId: nameof(ModConfig.EnableRightStickCursor)
             );
 
             // Standalone Features
             configMenu.AddSectionTitle(
-                mod: this.ModManifest,
-                text: () => "Standalone Features"
+                mod: manifest,
+                text: () => localization.GetText("gmcm.section.standalone")
             );
 
             configMenu.AddBoolOption(
-                mod: this.ModManifest,
-                name: () => "Hold Start Opens Journal",
-                tooltip: () => "Tap Start opens the inventory/menu (vanilla behaviour). " +
-                              "Hold Start for ~half a second to open the Quest Log/Journal. " +
-                              "Disable to restore vanilla Start (no journal shortcut).",
-                getValue: () => Config.EnableJournalButton,
-                setValue: value => Config.EnableJournalButton = value
+                mod: manifest,
+                name: () => localization.GetText("gmcm.journal-button.name"),
+                tooltip: () => localization.GetText("gmcm.journal-button.tooltip"),
+                getValue: () => localization.GetValue(nameof(ModConfig.EnableJournalButton), Config.EnableJournalButton),
+                setValue: value => Config.EnableJournalButton = value,
+                fieldId: nameof(ModConfig.EnableJournalButton)
             );
 
             configMenu.AddBoolOption(
-                mod: this.ModManifest,
-                name: () => "Start Skips Cutscenes",
-                tooltip: () => "Press Start twice during a skippable cutscene to skip it.",
-                getValue: () => Config.EnableCutsceneSkip,
-                setValue: value => Config.EnableCutsceneSkip = value
+                mod: manifest,
+                name: () => localization.GetText("gmcm.cutscene-skip.name"),
+                tooltip: () => localization.GetText("gmcm.cutscene-skip.tooltip"),
+                getValue: () => localization.GetValue(nameof(ModConfig.EnableCutsceneSkip), Config.EnableCutsceneSkip),
+                setValue: value => Config.EnableCutsceneSkip = value,
+                fieldId: nameof(ModConfig.EnableCutsceneSkip)
             );
 
             configMenu.AddBoolOption(
-                mod: this.ModManifest,
-                name: () => "Carpenter Menu Fix",
-                tooltip: () => "Prevents Robin's building menu from instantly closing when opened with A button.",
-                getValue: () => Config.EnableCarpenterMenuFix,
-                setValue: value => Config.EnableCarpenterMenuFix = value
+                mod: manifest,
+                name: () => localization.GetText("gmcm.carpenter-menu-fix.name"),
+                tooltip: () => localization.GetText("gmcm.carpenter-menu-fix.tooltip"),
+                getValue: () => localization.GetValue(nameof(ModConfig.EnableCarpenterMenuFix), Config.EnableCarpenterMenuFix),
+                setValue: value => Config.EnableCarpenterMenuFix = value,
+                fieldId: nameof(ModConfig.EnableCarpenterMenuFix)
             );
 
             configMenu.AddBoolOption(
-                mod: this.ModManifest,
-                name: () => "Furniture Debounce",
-                tooltip: () => "Prevents Y button from rapidly toggling furniture between placed and picked up. Adds ~500ms cooldown between interactions.",
-                getValue: () => Config.EnableFurnitureDebounce,
-                setValue: value => Config.EnableFurnitureDebounce = value
+                mod: manifest,
+                name: () => localization.GetText("gmcm.furniture-debounce.name"),
+                tooltip: () => localization.GetText("gmcm.furniture-debounce.tooltip"),
+                getValue: () => localization.GetValue(nameof(ModConfig.EnableFurnitureDebounce), Config.EnableFurnitureDebounce),
+                setValue: value => Config.EnableFurnitureDebounce = value,
+                fieldId: nameof(ModConfig.EnableFurnitureDebounce)
             );
 
             configMenu.AddBoolOption(
-                mod: this.ModManifest,
-                name: () => "Console Geode Menu",
-                tooltip: () => "Two-press A on Clint's geode menu: first A places the geode visibly on the anvil, second A starts the crack. B with a queued geode cancels the placement. Disable to restore vanilla one-press X behaviour.",
-                getValue: () => Config.EnableConsoleGeodeMenu,
-                setValue: value => Config.EnableConsoleGeodeMenu = value
+                mod: manifest,
+                name: () => localization.GetText("gmcm.console-geode-menu.name"),
+                tooltip: () => localization.GetText("gmcm.console-geode-menu.tooltip"),
+                getValue: () => localization.GetValue(nameof(ModConfig.EnableConsoleGeodeMenu), Config.EnableConsoleGeodeMenu),
+                setValue: value => Config.EnableConsoleGeodeMenu = value,
+                fieldId: nameof(ModConfig.EnableConsoleGeodeMenu)
             );
 
             configMenu.AddBoolOption(
-                mod: this.ModManifest,
-                name: () => "Console Furniture Placement",
-                tooltip: () => "Replace the misleading multi-tile green map (which marks where the furniture's top-left corner can land) with a single ghost rectangle showing exactly where the furniture will be placed. Matches console behavior.",
-                getValue: () => Config.EnableConsoleFurniturePlacement,
-                setValue: value => Config.EnableConsoleFurniturePlacement = value
+                mod: manifest,
+                name: () => localization.GetText("gmcm.furniture-placement.name"),
+                tooltip: () => localization.GetText("gmcm.furniture-placement.tooltip"),
+                getValue: () => localization.GetValue(nameof(ModConfig.EnableConsoleFurniturePlacement), Config.EnableConsoleFurniturePlacement),
+                setValue: value => Config.EnableConsoleFurniturePlacement = value,
+                fieldId: nameof(ModConfig.EnableConsoleFurniturePlacement)
             );
 
             configMenu.AddBoolOption(
-                mod: this.ModManifest,
-                name: () => "Console Craftable Placement",
-                tooltip: () => "Replace the cluttered multi-tile green map shown when holding a placeable craftable (machines, kegs, sprinklers, etc.) with a single ghost rectangle at the tile it will actually land on. Matches console behavior.",
-                getValue: () => Config.EnableConsoleCraftablePlacement,
-                setValue: value => Config.EnableConsoleCraftablePlacement = value
+                mod: manifest,
+                name: () => localization.GetText("gmcm.craftable-placement.name"),
+                tooltip: () => localization.GetText("gmcm.craftable-placement.tooltip"),
+                getValue: () => localization.GetValue(nameof(ModConfig.EnableConsoleCraftablePlacement), Config.EnableConsoleCraftablePlacement),
+                setValue: value => Config.EnableConsoleCraftablePlacement = value,
+                fieldId: nameof(ModConfig.EnableConsoleCraftablePlacement)
             );
 
             configMenu.AddBoolOption(
-                mod: this.ModManifest,
-                name: () => "Hold A to Craft",
-                tooltip: () => "Hold the A button on the crafting/cooking menu to craft continuously, like buying/selling in shops. Stops automatically when you run out of ingredients or inventory space.",
-                getValue: () => Config.EnableHoldToCraft,
-                setValue: value => Config.EnableHoldToCraft = value
+                mod: manifest,
+                name: () => localization.GetText("gmcm.hold-to-craft.name"),
+                tooltip: () => localization.GetText("gmcm.hold-to-craft.tooltip"),
+                getValue: () => localization.GetValue(nameof(ModConfig.EnableHoldToCraft), Config.EnableHoldToCraft),
+                setValue: value => Config.EnableHoldToCraft = value,
+                fieldId: nameof(ModConfig.EnableHoldToCraft)
             );
 
             configMenu.AddBoolOption(
-                mod: this.ModManifest,
-                name: () => "Museum Donation (Controller)",
-                tooltip: () => "Use the controller to donate at the museum: snap-select an item, move across the museum grid with the D-pad, and place with A. Disable to restore vanilla touch-only donation.",
-                getValue: () => Config.EnableMuseumDonationController,
-                setValue: value => Config.EnableMuseumDonationController = value
+                mod: manifest,
+                name: () => localization.GetText("gmcm.museum-donation.name"),
+                tooltip: () => localization.GetText("gmcm.museum-donation.tooltip"),
+                getValue: () => localization.GetValue(nameof(ModConfig.EnableMuseumDonationController), Config.EnableMuseumDonationController),
+                setValue: value => Config.EnableMuseumDonationController = value,
+                fieldId: nameof(ModConfig.EnableMuseumDonationController)
             );
 
             configMenu.AddBoolOption(
-                mod: this.ModManifest,
-                name: () => "Console Menus",
-                tooltip: () => "Fix controller navigation on GameMenu tabs that lack it (Social, Animals, Crafting, Collections, Options, Mod Config).",
-                getValue: () => Config.EnableGameMenuNavigation,
-                setValue: value => Config.EnableGameMenuNavigation = value
+                mod: manifest,
+                name: () => localization.GetText("gmcm.game-menu-navigation.name"),
+                tooltip: () => localization.GetText("gmcm.game-menu-navigation.tooltip"),
+                getValue: () => localization.GetValue(nameof(ModConfig.EnableGameMenuNavigation), Config.EnableGameMenuNavigation),
+                setValue: value => Config.EnableGameMenuNavigation = value,
+                fieldId: nameof(ModConfig.EnableGameMenuNavigation)
             );
 
             configMenu.AddBoolOption(
-                mod: this.ModManifest,
-                name: () => "Charge Tools While Moving",
-                tooltip: () => "Hold an upgraded (Copper+) Hoe or Watering Can while walking to charge its area effect (like console), instead of rapid single uses. Release fires the charged area; a quick tap is still one use. Basic tools, Pickaxe and Axe are unaffected.",
-                getValue: () => Config.EnableMoveWhileCharging,
-                setValue: value => Config.EnableMoveWhileCharging = value
+                mod: manifest,
+                name: () => localization.GetText("gmcm.move-while-charging.name"),
+                tooltip: () => localization.GetText("gmcm.move-while-charging.tooltip"),
+                getValue: () => localization.GetValue(nameof(ModConfig.EnableMoveWhileCharging), Config.EnableMoveWhileCharging),
+                setValue: value => Config.EnableMoveWhileCharging = value,
+                fieldId: nameof(ModConfig.EnableMoveWhileCharging)
             );
 
             configMenu.AddBoolOption(
-                mod: this.ModManifest,
-                name: () => "Console Slingshot Aim",
-                tooltip: () => "Drive the slingshot from the physical tool button (like console): hold to draw and aim with the left stick, release to fire once, and move normally when not aiming. Fixes Android's tap-to-move hijack where stick motion fires it, holding auto-fires, and movement is blocked.",
-                getValue: () => Config.EnableSlingshotAim,
-                setValue: value => Config.EnableSlingshotAim = value
+                mod: manifest,
+                name: () => localization.GetText("gmcm.slingshot-aim.name"),
+                tooltip: () => localization.GetText("gmcm.slingshot-aim.tooltip"),
+                getValue: () => localization.GetValue(nameof(ModConfig.EnableSlingshotAim), Config.EnableSlingshotAim),
+                setValue: value => Config.EnableSlingshotAim = value,
+                fieldId: nameof(ModConfig.EnableSlingshotAim)
             );
 
             configMenu.AddBoolOption(
-                mod: this.ModManifest,
-                name: () => "Console Drop Blocker",
-                tooltip: () => "Stop yourself from instantly re-grabbing an item you just dropped (like console). Tags your deliberate drops so the game's own ~1.2s pickup delay engages. Doesn't affect monster loot, harvest, or other drops.",
-                getValue: () => Config.EnableConsoleDropBlocker,
-                setValue: value => Config.EnableConsoleDropBlocker = value
+                mod: manifest,
+                name: () => localization.GetText("gmcm.drop-blocker.name"),
+                tooltip: () => localization.GetText("gmcm.drop-blocker.tooltip"),
+                getValue: () => localization.GetValue(nameof(ModConfig.EnableConsoleDropBlocker), Config.EnableConsoleDropBlocker),
+                setValue: value => Config.EnableConsoleDropBlocker = value,
+                fieldId: nameof(ModConfig.EnableConsoleDropBlocker)
             );
 
             configMenu.AddBoolOption(
-                mod: this.ModManifest,
-                name: () => "Console Dialogue Cursor",
-                tooltip: () => "Show the selected option in question boxes (sleep Yes/No, NPC yes/no, festival choices) the console way: a red outline plus the finger cursor at its corner, instead of Android's yellow highlight. Controller only; touch keeps the yellow box.",
-                getValue: () => Config.EnableConsoleDialogueCursor,
-                setValue: value => Config.EnableConsoleDialogueCursor = value
+                mod: manifest,
+                name: () => localization.GetText("gmcm.dialogue-cursor.name"),
+                tooltip: () => localization.GetText("gmcm.dialogue-cursor.tooltip"),
+                getValue: () => localization.GetValue(nameof(ModConfig.EnableConsoleDialogueCursor), Config.EnableConsoleDialogueCursor),
+                setValue: value => Config.EnableConsoleDialogueCursor = value,
+                fieldId: nameof(ModConfig.EnableConsoleDialogueCursor)
             );
 
             configMenu.AddBoolOption(
-                mod: this.ModManifest,
-                name: () => "Free Cursor on Settings",
-                tooltip: () => "Use the vanilla free-roaming cursor instead of snap navigation on the Options page and Mod Config page. Requires Console Menus to be enabled.",
-                getValue: () => Config.FreeCursorOnSettings,
-                setValue: value => Config.FreeCursorOnSettings = value
+                mod: manifest,
+                name: () => localization.GetText("gmcm.free-cursor.name"),
+                tooltip: () => localization.GetText("gmcm.free-cursor.tooltip"),
+                getValue: () => localization.GetValue(nameof(ModConfig.FreeCursorOnSettings), Config.FreeCursorOnSettings),
+                setValue: value => Config.FreeCursorOnSettings = value,
+                fieldId: nameof(ModConfig.FreeCursorOnSettings)
             );
 
             configMenu.AddBoolOption(
-                mod: this.ModManifest,
-                name: () => "Hide Touch Options (Controller)",
-                tooltip: () => "Hide the touch-only options (virtual-joystick Controls, on-screen controls toggle, invisible-button width, pinch-zoom, Adjust Joypad Controls) from the in-game Options page when a controller is connected. They don't apply to a physical controller.",
-                getValue: () => Config.HideTouchOptionsWithController,
-                setValue: value => Config.HideTouchOptionsWithController = value
+                mod: manifest,
+                name: () => localization.GetText("gmcm.hide-touch-options.name"),
+                tooltip: () => localization.GetText("gmcm.hide-touch-options.tooltip"),
+                getValue: () => localization.GetValue(nameof(ModConfig.HideTouchOptionsWithController), Config.HideTouchOptionsWithController),
+                setValue: value => Config.HideTouchOptionsWithController = value,
+                fieldId: nameof(ModConfig.HideTouchOptionsWithController)
             );
 
             configMenu.AddBoolOption(
-                mod: this.ModManifest,
-                name: () => "Use Bumpers Instead of Triggers",
-                tooltip: () => "For controllers where triggers aren't detected (e.g., Xbox via Bluetooth).\n" +
-                              "Toolbar: D-Pad Up/Down switches rows, LB/RB moves within row.\n" +
-                              "Shops: LB/RB adjusts purchase quantity.",
-                getValue: () => Config.UseBumpersInsteadOfTriggers,
-                setValue: value => Config.UseBumpersInsteadOfTriggers = value
+                mod: manifest,
+                name: () => localization.GetText("gmcm.bumpers-instead-of-triggers.name"),
+                tooltip: () => localization.GetText("gmcm.bumpers-instead-of-triggers.tooltip"),
+                getValue: () => localization.GetValue(nameof(ModConfig.UseBumpersInsteadOfTriggers), Config.UseBumpersInsteadOfTriggers),
+                setValue: value => Config.UseBumpersInsteadOfTriggers = value,
+                fieldId: nameof(ModConfig.UseBumpersInsteadOfTriggers)
             );
 
             configMenu.AddTextOption(
-                mod: this.ModManifest,
-                name: () => "Item Stowing",
-                tooltip: () => "The game's Item Stowing option, which Android's settings page hides.\n" +
-                              "When on, pressing the use-tool button while holding an item you can't place there puts it away; press again to take it back out.\n" +
-                              "Gamepad only: works only while you play with a controller.",
-                getValue: () => Config.ItemStowing,
+                mod: manifest,
+                name: () => localization.GetText("gmcm.item-stowing.name"),
+                tooltip: () => localization.GetText("gmcm.item-stowing.tooltip"),
+                getValue: () => localization.GetValue(nameof(ModConfig.ItemStowing), Config.ItemStowing),
                 setValue: value => Config.ItemStowing = value,
                 allowedValues: new[] { "Off", "GamepadOnly", "Both" },
                 formatAllowedValue: value => value switch
                 {
-                    "GamepadOnly" => "Gamepad only",
-                    "Both" => "On",
-                    _ => "Off"
-                }
+                    "GamepadOnly" => localization.GetText("gmcm.stowing.gamepad"),
+                    "Both" => localization.GetText("gmcm.stowing.both"),
+                    _ => localization.GetText("gmcm.stowing.off")
+                },
+                fieldId: nameof(ModConfig.ItemStowing)
             );
 
             // Debug
             configMenu.AddSectionTitle(
-                mod: this.ModManifest,
-                text: () => "Debug"
+                mod: manifest,
+                text: () => localization.GetText("gmcm.section.debug")
             );
 
             configMenu.AddBoolOption(
-                mod: this.ModManifest,
-                name: () => "Verbose Logging",
-                tooltip: () => "Log detailed information for debugging.",
-                getValue: () => Config.VerboseLogging,
-                setValue: value => Config.VerboseLogging = value
+                mod: manifest,
+                name: () => localization.GetText("gmcm.verbose-logging.name"),
+                tooltip: () => localization.GetText("gmcm.verbose-logging.tooltip"),
+                getValue: () => localization.GetValue(nameof(ModConfig.VerboseLogging), Config.VerboseLogging),
+                setValue: value => Config.VerboseLogging = value,
+                fieldId: nameof(ModConfig.VerboseLogging)
             );
         }
     }
