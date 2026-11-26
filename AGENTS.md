@@ -40,7 +40,7 @@
 │   ├── default.json
 │   └── zh.json
 ├── ButtonRemapper.cs                # ControllerLayout / ControlStyle 枚举与透传兼容层
-├── Patches/                         # Harmony 补丁与运行期适配模块（共 29 个文件，单一职责拆分）
+├── Patches/                         # Harmony 补丁与运行期适配模块（共 31 个文件，单一职责拆分）
 ├── tools/                           # 开发者辅助脚本（测试存档注入脚本、UI 配色工具）
 └── .github/workflows/               # GitHub Actions 工作流（发布自动化配置）
 ```

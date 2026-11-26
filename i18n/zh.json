@@ -23,7 +23,7 @@
   "gmcm.style.switch": "Switch 风格",
   "gmcm.style.xbox": "Xbox/PS 风格",
   "gmcm.console-chests.name": "主机式箱子操作",
-  "gmcm.console-chests.tooltip": "在箱子中用 A 转移整组、Y 转移单个（长按连传）、X 整理、RB 跳至补充堆叠，支持侧栏导航与调色板。",
+  "gmcm.console-chests.tooltip": "在箱子中用 A 转移整组、Y 转移单个（长按连传）、X 整理、RB 跳至补充堆叠，支持侧栏导航与调色板。选中收集包仍需的物品时，社区中心卷轴会跳动；轻点卷轴或选中后按 A 可查看收集包。",
   "gmcm.console-shops.name": "主机式商店操作",
   "gmcm.console-shops.tooltip": "用 A 购买、LB/RB 调整购买数量、右摇杆快速翻页；在出售页用 A 整组出售或 Y 单个出售。",
   "gmcm.console-animal-menu.name": "主机式动物菜单",

@@ -1,7 +1,7 @@
 # 背包、箱子与出货箱主机操控
 
 - **产品生命周期**：`active`
-- **关联代码**：`Patches/InventoryManagementPatches.cs`、`Patches/InventoryPagePatches.cs`、`Patches/ItemGrabMenuPatches.cs`、`Patches/BundleIconPulsePatches.cs`、`Patches/ShippingBinPatches.cs`、`Patches/FishingRodPatches.cs`、`Patches/SlingshotPatches.cs`、`ModEntry.cs`、`ModConfig.cs`
+- **关联代码**：`Patches/InventoryManagementPatches.cs`、`Patches/InventoryPagePatches.cs`、`Patches/ItemGrabMenuPatches.cs`、`Patches/BundleIconPulsePatches.cs`、`Patches/ChestBundleNote.cs`、`Patches/ShippingBinPatches.cs`、`Patches/FishingRodPatches.cs`、`Patches/SlingshotPatches.cs`、`ModEntry.cs`、`ModConfig.cs`
 
 ## 1. 目的和用户可见行为
 
@@ -12,7 +12,7 @@
    - **Y 键**：从堆叠中抓起单个物品，长按持续逐个抓取。
    - **X 键**：整理背包，同时强制拦截 Android 原版原始 X 键误删槽位物品的缺陷。
    - **视觉与提示**：手持物品跟随当前光标槽位渲染；悬停任意物品及装备槽时显示完整属性提示；若抓起物品期间触碰屏幕，安全退回原槽位；在整理与垃圾桶之间的丢弃区支持主动丢弃。
-   - **社区中心献祭书跳动提示**：手柄模式下，在背包（`GameMenu` / `InventoryPage`）或箱子（`ItemGrabMenu`）中将光标停留在可献祭物品上（或抓起该物品悬停于空位/丢弃区）时，自动按原版逻辑检测未完成的社区中心/失踪收集包并触发社区中心金色卷轴图标（`junimoNoteIcon`）持续脉冲跳动；移开、切页或切换至触屏时自动恢复静止。
+   - **社区中心需求提示**：手柄停在背包内的物品上，或持物停在空格时，金色卷轴会为已解锁收集包仍需的物品跳动。背包页沿用原生触屏操作。
 2. **鱼竿鱼饵/鱼钩与弹弓弹药装卸**：
    - 在背包页对鱼饵/鱼钩或弹弓弹药按 **A** 选中，再对鱼竿或弹弓按 **Y** 挂载；未选中耗材时直接对鱼竿/弹弓按 **Y** 卸载（鱼竿先卸鱼饵再卸鱼钩）并将卸下物置入光标。
 3. **主机风格箱子操控**：
@@ -20,6 +20,7 @@
    - **Y 键**：转移单个物品（支持长按连续转移；对鱼竿/弹弓可分离附件）。
    - **X 键**：整理箱子；**RB 键**：快速吸附到“填充堆叠（Fill Stacks）”按钮。
    - **全侧边栏与调色板**：侧边栏全部按钮（整理箱子、填充堆叠、切换颜色、整理背包、垃圾桶、关闭）均可手柄可达；7×3 调色板支持完整网格导航，按 B 仅关闭调色板而不退出箱子；关闭按钮退出后设置 `GameplayButtonPatches.SuppressAUntilRelease` 防止按键穿透。
+   - **查看收集包**：普通箱子、大箱子、冰箱和迷你冰箱在原版进度允许时显示金色卷轴。轻点卷轴或导航至卷轴按 **A** 进入只读浏览，关闭后回到同一箱子。
    - **特殊容器保护**：仅取容器（如自动采集器 Auto-Grabber、社区中心奖励箱等）禁止反向存入，奖励菜单屏蔽 Y 键单取；博物馆奖励书（如《矮人语教程》）正确消耗习得 `canUnderstandDwarves` 技能。
 4. **主机风格出货箱**：
    - 仅针对真实 `ShippingBin` 生效（避免误伤衣柜、鱼缸等复用 `ItemGrabMenu` 的容器）：**A 键**出货整组，**Y 键**出货单个，并正确刷新“上次出货”槽位显示与回取。
@@ -45,13 +46,14 @@
   - 统一驱动 A 整组快传、Y 单件长按快传、X 整理、RB 跳至 `FillOutStacks`、满格互换状态机、7×3 调色板网格导航、手指光标绘制、自适应屏幕的悬浮提示定位，以及退出时的状态清理（`OnMenuClosed`）。
   - 存/取物品时触发 `behaviorFunction` / `behaviorOnItemGrab` 等原版钩子，确保任务进度、献祭钩子与容器源移除一致生效。
 
-### 2.3 社区中心献祭图标跳动（`BundleIconPulsePatches`）
+### 2.3 社区中心卷轴与材料提示
 
-- Android 原版依赖触屏按住事件（`receiveLeftClick` / `leftClickHeld`）触发献祭物品检测，而主机模式下按 A 已被接管为抓放/快传且每帧 `Game1.Update` 会重置 `GameMenu.bundleItemHovered = false`，导致献祭图标不再跳动。
-- `BundleIconPulsePatches` 使用 `AccessTools.DeclaredMethod` Patch `GameMenu` 与 `ItemGrabMenu` 的 `update` / `draw` Prefix，仅在 `Game1.options.gamepadControls` 为真时生效：
-  - 按当前吸附组件解析背包槽位、箱子槽位及光标/满格互换手持物品，调用原版 `CommunityCenter.couldThisIngredienteBeUsedInABundle(Object)`（兼容品质要求、类别要求、混搭收集包及失踪收集包）判断是否为未完成收集包所需物品。
-  - 通过反射同时兼容 Android 的 `GameMenu.junimoNoteIcon` 与 PC/容器的 `InventoryPage.junimoNoteIcon` / `ItemGrabMenu.junimoNoteIcon` 及对应 `junimoNotePulser`，每帧同步 `GameMenu.bundleItemHovered` 并以与原版一致的正弦曲线（`baseScale + sin(ms / 100) * (baseScale / 16)`）驱动图标脉冲缩放。
-  - 菜单切换时通过 `ModEntry.OnMenuChanged` → `BundleIconPulsePatches.OnMenuChanged` 复位动画状态，并在直接打开箱子时刷新 `CommunityCenter.refreshBundlesIngredientsInfo()`，避免混搭收集包读档后首次开箱数据未刷新。
+- 卷轴归属 `EnableConsoleChests`。仅处理来源为箱子、类型为普通或大箱子的 `ItemGrabMenu`，排除自动采集器、出货箱与奖励菜单。解锁条件沿用原版，包含失踪收集包阶段。
+- 卷轴复用可见的原版组件，缺少组件时由当前箱子绘制。64×64 的点击框优先放在上方「整理箱子」按钮左侧，与按钮垂直居中，间隔 12 像素。若箱子网格与按钮之间只剩 64–75 像素，则将卷轴放在间隙中央。首选位置放不下时，卷轴自动在安全区域内避开关闭按钮、侧栏与两个物品网格；没有空位时隐藏。调色板展开时暂停卷轴点击与手柄导航，调色板遮住卷轴时隐藏卷轴。
+- 卷轴在整理按钮左侧时，手柄可在「箱子第一行最右格 ↔ 卷轴（ID 898）↔ 整理箱子」之间双向移动。从卷轴向上到关闭按钮，向下到填充堆叠（缺少时依次找切换颜色、整理背包）。从关闭按钮向下仍回到整理箱子。回退布局中，关闭按钮向下可到卷轴；卷轴位于侧栏右侧时，也可从填充堆叠或切换颜色向右进入。
+- 提示按当前箱子或背包槽位取物，空格时检查满格互换或光标上的物品。触屏优先检查拖动中的物品，再检查手指按住的格子或最近触摸网格中仍选中的格子。点空白处、转走选中物品后，卷轴恢复静止。
+- 游戏菜单打开、符合条件的箱子打开和从只读浏览返回箱子时刷新 `CommunityCenter.refreshBundlesIngredientsInfo()`。开箱期间逐帧比对 `NetWorldState.Bundles` 的槽位状态，变化后刷新材料缓存及当帧判定。物品和类别、最低品质均交给原版 `couldThisIngredienteBeUsedInABundle` 判断。已提交的槽位不再触发正弦跳动；同一物品仍可满足其他已解锁的空缺槽位。
+- 空手时轻点卷轴或选中后按 **A** 可只读查看收集包。返回后保留原箱子和内容，手柄焦点回到卷轴。详见[社区中心菜单](special-menus-carpenter-cc-museum-geode.md)。
 
 ### 2.4 出货箱（`ShippingBinPatches`）
 
@@ -59,14 +61,14 @@
 
 ## 3. 配置与持久化
 
-- `EnableConsoleChests`（默认 `true`；同时控制背包/箱子 X 键整理与原始 X 键防误删）
+- `EnableConsoleChests`（默认 `true`；控制箱子卷轴、背包/箱子 X 键整理与原始 X 键防误删）
 - `EnableConsoleInventory`（默认 `true`；控制背包 A/Y 抓取放置与鱼竿/弹弓装卸）
 - `EnableConsoleShipping`（默认 `true`）
 - `EnableConsoleDropBlocker`（默认 `true`；由 `InventoryManagementPatches` 主动丢弃流程读取）
 
 ## 4. 状态与失败语义
 
-- 离开 `GameMenu` 或 `ItemGrabMenu` 时必须清空内部手持/互换/选中耗材引用，避免跨菜单残留空指针或幽灵物品。
+- 关闭背包或箱子时清空内部手持/互换/选中耗材引用；从箱子进入只读收集包时暂存箱子实例，避免跨菜单残留空指针或幽灵物品。
 - 背包抓取期间若发生触屏中断，将暂存物品退回来源槽位，保证物品不丢失、不复制。
 - 箱子关闭按钮退出后通过 `GameplayButtonPatches.SuppressAUntilRelease = true` + `InvalidateCache()` 防止按住的 A 键在关闭瞬间立刻重新打开箱子。
 
@@ -74,7 +76,8 @@
 
 - 在背包中测试 A 抓放/互换、Y 单件与长按拆分、X 整理（确认绝不会删除当前格物品）、装备槽穿脱与提示、鱼竿装卸鱼饵/鱼钩、弹弓装卸弹药。
 - 在普通箱子、自动采集器、鱼缸、衣柜、出货箱中分别测试 A/Y/X/RB、侧边栏导航、7×3 调色板、满格互换与关闭按钮退出，确认无物品复制或丢失。
-- 在未完成社区中心献祭的存档中，用手柄在背包和箱子里将光标移至可献祭物品（含品质要求如金星作物）、非献祭物品、工具及空槽上，验证社区中心金色卷轴图标在可献祭物品上平滑脉冲跳动、移开/转移后立刻停止，且切换回触屏模式不受影响。
+- 在普通箱子、大箱子与冰箱上分别用手柄和触屏选择合格、品质不足及已提交的材料，并测试点击空白、转走物品和切换输入方式。让另一位玩家在箱子保持打开时提交当前材料，检查跳动是否随同步停止，以及其他包仍需要该物品时是否继续。
+- 从箱子第一行最右格连续按右到卷轴和整理箱子，再连续按左原路返回；从关闭按钮按下应到整理箱子。改变缩放，检查回退位置不遮挡按钮或槽位，展开和收起调色板后检查手柄导航。打开卷轴后切换房间、查看材料，再分别用 B 和关闭按钮返回原箱子。
 
 ## 6. 已知限制与防回归说明
 

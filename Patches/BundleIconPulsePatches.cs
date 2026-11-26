@@ -13,33 +13,7 @@ using SObject = StardewValley.Object;
 
 namespace AndroidConsolizer.Patches
 {
-    /// <summary>
-    /// Restores Community Center bundle icon pulsing (junimoNoteIcon) when navigating
-    /// Inventory (GameMenu / InventoryPage) and Chests (ItemGrabMenu) with a controller.
-    ///
-    /// Root cause on Android:
-    /// - Game1.Update resets GameMenu.bundleItemHovered = false every tick.
-    /// - On PC, Game1.updateActiveMenu calls activeClickableMenu.performHoverAction()
-    ///   every frame, which calls InventoryMenu.hover() -> CommunityCenter.couldThisIngredienteBeUsedInABundle()
-    ///   -> sets GameMenu.bundleItemHovered = true and drives the sine-wave scale pulse
-    ///   on junimoNoteIcon via junimoNotePulser.
-    /// - On Android, touch mode triggers bundle detection on press/hold (receiveLeftClick /
-    ///   leftClickHeld). With AndroidConsolizer active, controller navigation intercepts
-    ///   those touch-sim presses for instant console pickup/transfer, InventoryManagementPatches
-    ///   only calls performHoverAction once on slot change (leaving junimoNotePulser at 0 ->
-    ///   sin(0) = 0 before Game1.Update clears bundleItemHovered on the next tick), and
-    ///   ItemGrabMenuPatches never calls performHoverAction at all.
-    ///
-    /// Fix:
-    /// - In controller mode (Game1.options.gamepadControls), evaluate the item at the
-    ///   currently snapped inventory/chest slot (or cursor/swap held item when over an
-    ///   empty slot) on GameMenu and ItemGrabMenu update/draw prefixes.
-    /// - Query vanilla CommunityCenter.couldThisIngredienteBeUsedInABundle(Object),
-    ///   write GameMenu.bundleItemHovered, sync junimoNotePulser if present, and drive
-    ///   the vanilla sine-wave scale pulse on any active junimoNoteIcon (resolved via
-    ///   reflection across GameMenu, InventoryPage, and ItemGrabMenu for Android/PC safety).
-    /// - Touch mode (!gamepadControls) is left completely untouched.
-    /// </summary>
+    /// <summary>Drive the vanilla scroll animation from the selected inventory item.</summary>
     internal static class BundleIconPulsePatches
     {
         private static IMonitor Monitor;
@@ -51,7 +25,11 @@ namespace AndroidConsolizer.Patches
         private static FieldInfo _gameMenuJunimoNotePulserField;
         private static FieldInfo _invPageJunimoNoteIconField;
         private static FieldInfo _invPageJunimoNotePulserField;
-        private static FieldInfo _itemGrabJunimoNoteIconField;
+        private static ChestBundleNote _chest;
+        private static readonly Dictionary<int, bool[]> Progress = new();
+        private static int _progressTick = -1;
+        private static string _lastError;
+        internal static ChestBundleNote ForChest(ItemGrabMenu menu) => _chest?.Menu == menu ? _chest : null;
         private static FieldInfo _itemGrabJunimoNotePulserField;
 
         // Pulse animation state (mirrors vanilla junimoNotePulser: milliseconds accumulated while pulsing)
@@ -89,7 +67,6 @@ namespace AndroidConsolizer.Patches
                 _gameMenuJunimoNotePulserField = AccessTools.Field(typeof(GameMenu), "junimoNotePulser");
                 _invPageJunimoNoteIconField = AccessTools.Field(typeof(InventoryPage), "junimoNoteIcon");
                 _invPageJunimoNotePulserField = AccessTools.Field(typeof(InventoryPage), "junimoNotePulser");
-                _itemGrabJunimoNoteIconField = AccessTools.Field(typeof(ItemGrabMenu), "junimoNoteIcon");
                 _itemGrabJunimoNotePulserField = AccessTools.Field(typeof(ItemGrabMenu), "junimoNotePulser");
 
                 var gameMenuUpdate = AccessTools.DeclaredMethod(typeof(GameMenu), nameof(GameMenu.update), new[] { typeof(GameTime) });
@@ -118,6 +95,19 @@ namespace AndroidConsolizer.Patches
                         prefix: new HarmonyMethod(typeof(BundleIconPulsePatches), nameof(ItemGrabMenu_Update_Prefix))
                     );
                 }
+
+                // Layer the self-hosted scroll with the inventory controls, below native
+                // tooltips and the pointer. Patch both 1-arg (PC) and 4-arg (Android) draw
+                // overloads; ChestBundleNote._drawn ensures the icon renders at most once per frame.
+                var inventoryDraw1 = AccessTools.DeclaredMethod(typeof(InventoryMenu), nameof(InventoryMenu.draw),
+                    new[] { typeof(SpriteBatch) });
+                if (inventoryDraw1 != null)
+                    harmony.Patch(inventoryDraw1, postfix: new HarmonyMethod(typeof(BundleIconPulsePatches), nameof(InventoryDraw_Postfix)));
+
+                var inventoryDraw4 = AccessTools.DeclaredMethod(typeof(InventoryMenu), nameof(InventoryMenu.draw),
+                    new[] { typeof(SpriteBatch), typeof(int), typeof(int), typeof(int) });
+                if (inventoryDraw4 != null)
+                    harmony.Patch(inventoryDraw4, postfix: new HarmonyMethod(typeof(BundleIconPulsePatches), nameof(InventoryDraw_Postfix)));
 
                 var itemGrabDraw = AccessTools.DeclaredMethod(typeof(ItemGrabMenu), nameof(ItemGrabMenu.draw), new[] { typeof(SpriteBatch) });
                 if (itemGrabDraw != null)
@@ -159,18 +149,21 @@ namespace AndroidConsolizer.Patches
                 _lastDiagKey = null;
                 _lastInspectedMenu = null;
 
-                // Ensure Remixed Bundles / freshly loaded saves have up-to-date bundle ingredient
-                // lookup info when opening a chest directly before opening GameMenu.
-                if (newMenu is ItemGrabMenu && ShouldShowJunimoNoteIcon())
+                _chest = null;
+                _lastError = null;
+                Progress.Clear();
+                _progressTick = -1;
+                if (newMenu is ItemGrabMenu grab)
+                    _chest = ChestBundleNote.Create(grab);
+                if (_chest != null || newMenu is GameMenu && ShouldShowJunimoNoteIcon())
                 {
-                    var cc = Game1.getLocationFromName("CommunityCenter") as CommunityCenter;
-                    cc?.refreshBundlesIngredientsInfo();
+                    (Game1.getLocationFromName("CommunityCenter") as CommunityCenter)?.refreshBundlesIngredientsInfo();
+                    if (_chest != null) SnapshotProgress();
                 }
             }
             catch (Exception ex)
             {
-                if (ModEntry.Config?.VerboseLogging == true)
-                    Monitor?.Log($"[BundlePulse] OnMenuChanged error: {ex.Message}", LogLevel.Debug);
+                LogError(nameof(OnMenuChanged), ex);
             }
         }
 
@@ -184,8 +177,7 @@ namespace AndroidConsolizer.Patches
             }
             catch (Exception ex)
             {
-                if (ModEntry.Config?.VerboseLogging == true)
-                    Monitor?.Log($"[BundlePulse] GameMenu_Update_Prefix error: {ex.Message}", LogLevel.Debug);
+                LogError(nameof(GameMenu_Update_Prefix), ex);
             }
         }
 
@@ -197,8 +189,7 @@ namespace AndroidConsolizer.Patches
             }
             catch (Exception ex)
             {
-                if (ModEntry.Config?.VerboseLogging == true)
-                    Monitor?.Log($"[BundlePulse] GameMenu_Draw_Prefix error: {ex.Message}", LogLevel.Debug);
+                LogError(nameof(GameMenu_Draw_Prefix), ex);
             }
         }
 
@@ -210,21 +201,26 @@ namespace AndroidConsolizer.Patches
             }
             catch (Exception ex)
             {
-                if (ModEntry.Config?.VerboseLogging == true)
-                    Monitor?.Log($"[BundlePulse] ItemGrabMenu_Update_Prefix error: {ex.Message}", LogLevel.Debug);
+                LogError(nameof(ItemGrabMenu_Update_Prefix), ex);
             }
+        }
+
+        private static void InventoryDraw_Postfix(InventoryMenu __instance, SpriteBatch b)
+        {
+            if (_chest != null && Game1.activeClickableMenu == _chest.Menu && __instance == _chest.Menu.ItemsToGrabMenu)
+                _chest.DrawIcon(b);
         }
 
         private static void ItemGrabMenu_Draw_Prefix(ItemGrabMenu __instance)
         {
             try
             {
+                ForChest(__instance)?.BeginDraw();
                 ProcessItemGrabMenu(__instance, applyScale: true);
             }
             catch (Exception ex)
             {
-                if (ModEntry.Config?.VerboseLogging == true)
-                    Monitor?.Log($"[BundlePulse] ItemGrabMenu_Draw_Prefix error: {ex.Message}", LogLevel.Debug);
+                LogError(nameof(ItemGrabMenu_Draw_Prefix), ex);
             }
         }
 
@@ -261,7 +257,8 @@ namespace AndroidConsolizer.Patches
                 ? menu.GetCurrentPage() as InventoryPage
                 : null;
 
-            bool needed = EvaluateMenu(menu, () => GetInventoryPageHoveredItem(invPage), out Item hoveredItem);
+            Item hoveredItem = GetInventoryPageHoveredItem(invPage);
+            bool needed = EvaluateMenu(menu, hoveredItem);
 
             SetBundleItemHovered(needed);
 
@@ -299,25 +296,24 @@ namespace AndroidConsolizer.Patches
 
         private static void ProcessItemGrabMenu(ItemGrabMenu menu, bool applyScale)
         {
-            if (menu == null)
+            var note = ForChest(menu);
+            if (note == null || ModEntry.Config?.EnableConsoleChests != true)
                 return;
-
-            // Leave vanilla touch behavior untouched when not in controller mode
-            if (!Game1.options.gamepadControls)
+            if (_progressTick != Game1.ticks)
             {
-                if (_wasPulsing)
+                _progressTick = Game1.ticks;
+                note.UpdateLayout();
+                if (ProgressChanged())
                 {
-                    RestoreItemGrabIcons(menu);
-                    ClearPulseState();
+                    (Game1.getLocationFromName("CommunityCenter") as CommunityCenter)?.refreshBundlesIngredientsInfo();
+                    SnapshotProgress();
+                    _evalTick = -1;
                 }
-                return;
             }
-
-            bool needed = EvaluateMenu(menu, () => GetItemGrabHoveredItem(menu), out Item hoveredItem);
-
+            var hoveredItem = Game1.options.gamepadControls ? GetItemGrabHoveredItem(menu) : note.TouchItem();
+            bool needed = note.Icon.visible && EvaluateMenu(menu, hoveredItem);
             SetBundleItemHovered(needed);
-
-            var grabIcon = _itemGrabJunimoNoteIconField?.GetValue(menu) as ClickableTextureComponent;
+            var grabIcon = note.Icon;
 
             LogMenuInspectionIfVerbose(menu, grabIcon, null);
 
@@ -331,10 +327,15 @@ namespace AndroidConsolizer.Patches
                 if (applyScale)
                     ApplyPulseScale(grabIcon);
             }
-            else if (_wasPulsing)
+            else
             {
-                RestoreItemGrabIcons(menu);
-                ClearPulseState();
+                if (_wasPulsing)
+                {
+                    RestoreItemGrabIcons(menu);
+                    ClearPulseState();
+                }
+                else if (applyScale)
+                    RestoreIconScale(grabIcon);
             }
 
             LogStateTransitionIfVerbose("ItemGrabMenu", hoveredItem, needed, grabIcon);
@@ -342,16 +343,14 @@ namespace AndroidConsolizer.Patches
 
         // ===== Item resolution & vanilla bundle check =====
 
-        private static bool EvaluateMenu(IClickableMenu menu, Func<Item> resolveItem, out Item item)
+        private static bool EvaluateMenu(IClickableMenu menu, Item item)
         {
             int tick = Game1.ticks;
-            if (_evalTick == tick && ReferenceEquals(_evalMenu, menu))
+            if (_evalTick == tick && ReferenceEquals(_evalMenu, menu) && ReferenceEquals(item, _evalItem))
             {
-                item = _evalItem;
                 return _evalNeeded;
             }
 
-            item = resolveItem();
             bool needed = IsItemNeededForBundle(item);
 
             _evalTick = tick;
@@ -359,6 +358,33 @@ namespace AndroidConsolizer.Patches
             _evalItem = item;
             _evalNeeded = needed;
             return needed;
+        }
+
+        // NetBundles' value indexer copies bool arrays. FieldDict exposes the live NetArrays
+        // and its concrete dictionary enumerator allocates nothing on unchanged ticks.
+        private static bool ProgressChanged()
+        {
+            var fields = Game1.netWorldState.Value.Bundles.FieldDict;
+            if (fields.Count != Progress.Count) return true;
+            foreach (var pair in fields)
+            {
+                if (!Progress.TryGetValue(pair.Key, out var previous) || previous.Length != pair.Value.Count)
+                    return true;
+                for (int i = 0; i < previous.Length; i++)
+                    if (previous[i] != pair.Value[i]) return true;
+            }
+            return false;
+        }
+
+        private static void SnapshotProgress()
+        {
+            Progress.Clear();
+            foreach (var pair in Game1.netWorldState.Value.Bundles.FieldDict)
+            {
+                var snapshot = new bool[pair.Value.Count];
+                for (int i = 0; i < snapshot.Length; i++) snapshot[i] = pair.Value[i];
+                Progress.Add(pair.Key, snapshot);
+            }
         }
 
         private static Item GetInventoryPageHoveredItem(InventoryPage invPage)
@@ -415,14 +441,14 @@ namespace AndroidConsolizer.Patches
                 }
             }
 
-            return slotItem ?? ItemGrabMenuPatches.SwapHeldItem ?? Game1.player?.CursorSlotItem;
+            return slotItem ?? ItemGrabMenuPatches.SwapHeldItem ?? Game1.player?.CursorSlotItem ?? menu.heldItem;
         }
 
         /// <summary>
         /// Mirrors vanilla InventoryPage.ShouldShowJunimoNoteIcon() using only universal Farmer APIs
         /// (no direct reference to InventoryPage.ShouldShowJunimoNoteIcon for Android-vs-PC safety).
         /// </summary>
-        private static bool ShouldShowJunimoNoteIcon()
+        internal static bool ShouldShowJunimoNoteIcon()
         {
             var player = Game1.player;
             var master = Game1.MasterPlayer;
@@ -530,7 +556,7 @@ namespace AndroidConsolizer.Patches
             if (menu == null)
                 return;
 
-            var grabIcon = _itemGrabJunimoNoteIconField?.GetValue(menu) as ClickableTextureComponent;
+            var grabIcon = ForChest(menu)?.Icon;
             RestoreIconScale(grabIcon);
             SyncPulserField(_itemGrabJunimoNotePulserField, menu, 0);
         }
@@ -549,6 +575,13 @@ namespace AndroidConsolizer.Patches
 
         // ===== Diagnostics (VerboseLogging-gated & edge-debounced) =====
 
+        private static void LogError(string callback, Exception ex)
+        {
+            if (ModEntry.Config?.VerboseLogging != true || _lastError == ex.Message) return;
+            _lastError = ex.Message;
+            Monitor?.Log($"[BundlePulse] {callback}: {ex.Message}", LogLevel.Debug);
+        }
+
         private static void LogMenuInspectionIfVerbose(IClickableMenu menu, ClickableTextureComponent primary, ClickableTextureComponent secondary)
         {
             if (ModEntry.Config?.VerboseLogging != true)
@@ -562,7 +595,7 @@ namespace AndroidConsolizer.Patches
                 $"primaryIcon={(primary != null ? $"vis={primary.visible},scale={primary.scale:F2},base={primary.baseScale:F2},bounds={primary.bounds}" : "null")} | " +
                 $"secondaryIcon={(secondary != null ? $"vis={secondary.visible},scale={secondary.scale:F2},base={secondary.baseScale:F2}" : "null")} | " +
                 $"fields(bundleHovered={_bundleItemHoveredField != null},gmIcon={_gameMenuJunimoNoteIconField != null},gmPulser={_gameMenuJunimoNotePulserField != null}," +
-                $"invIcon={_invPageJunimoNoteIconField != null},grabIcon={_itemGrabJunimoNoteIconField != null})",
+                $"invIcon={_invPageJunimoNoteIconField != null})",
                 LogLevel.Debug);
         }
 

@@ -66,9 +66,132 @@ namespace AndroidConsolizer.Patches
         private static HashSet<int> _grabbedRewardIndices = new HashSet<int>();
 
 
+        private static readonly ConstructorInfo ReadOnlyConstructor = AccessTools.Constructor(typeof(JunimoNoteMenu),
+            new[] { typeof(bool), typeof(int), typeof(bool) });
+        private static readonly FieldInfo ReturnMenu = AccessTools.Field(typeof(JunimoNoteMenu), "menuToReturnTo");
+        private static readonly FieldInfo FromGameMenu = AccessTools.Field(typeof(JunimoNoteMenu), "fromGameMenu");
+        private static readonly FieldInfo NextRoom = AccessTools.Field(typeof(JunimoNoteMenu), "areaNextButton");
+        private static readonly FieldInfo PreviousRoom = AccessTools.Field(typeof(JunimoNoteMenu), "areaBackButton");
+        private static readonly FieldInfo BackButton = AccessTools.Field(typeof(JunimoNoteMenu), "backButton");
+        private static readonly MethodInfo ClosePage = AccessTools.Method(typeof(JunimoNoteMenu), "closeBundlePage", Type.EmptyTypes);
+        private static readonly MethodInfo SwapPage = AccessTools.Method(typeof(JunimoNoteMenu), "SwapPage", new[] { typeof(int) });
+        private static ItemGrabMenu _returnChestMenu;
+        private static JunimoNoteMenu _chestNote;
+        private static int _backTick = -1;
+        private static int _openTick = -1;
+        private static int _returnTick = -1;
+        private static bool _ignoreOpeningRelease;
+        private static string _lastUpdateError;
+        private static ClickableTextureComponent _touchIngredient;
+
+        internal static bool HasChestReturn => _returnChestMenu != null;
+        internal static bool IsSuspendedChest(IClickableMenu menu) => menu != null && menu == _returnChestMenu;
+        internal static bool JustReturned => Game1.ticks == _returnTick;
+
+        internal static void ClearChestReturn()
+        {
+            _returnChestMenu = null;
+            _chestNote = null;
+            _openTick = _returnTick = _backTick = -1;
+            _ignoreOpeningRelease = false;
+        }
+
+        internal static void OpenFromChest(ItemGrabMenu chest, bool controller)
+        {
+            try
+            {
+                if (ReadOnlyConstructor == null || chest != Game1.activeClickableMenu || !chest.readyToClose()
+                    || chest.heldItem != null || Game1.player?.CursorSlotItem != null || ItemGrabMenuPatches.SwapHeldItem != null
+                    || ItemGrabMenuPatches.ColorPickerOpen || chest.chestColorPicker?.visible == true)
+                {
+                    Game1.playSound("cancel");
+                    return;
+                }
+                var note = (JunimoNoteMenu)ReadOnlyConstructor.Invoke(new object[] { true, 1, false });
+                SetReturnMenu(note, chest);
+                _returnChestMenu = chest;
+                _chestNote = note;
+                _openTick = Game1.ticks;
+                _ignoreOpeningRelease = true;
+                if (controller)
+                {
+                    GameplayButtonPatches.SuppressAUntilRelease = true;
+                    GameplayButtonPatches.InvalidateCache();
+                }
+                Game1.activeClickableMenu = note;
+            }
+            catch (Exception ex)
+            {
+                ClearChestReturn();
+                Game1.playSound("cancel");
+                Monitor.Log($"Could not open the chest bundle note: {ex.Message}", LogLevel.Warn);
+            }
+        }
+
+        private static bool FromInventory(JunimoNoteMenu menu) =>
+            menu == _chestNote || FromGameMenu?.GetValue(menu) is true;
+
+        private static bool ReadOnlyDetail(JunimoNoteMenu menu) =>
+            FromInventory(menu) || _currentPageBundleField?.GetValue(menu) is Bundle { depositsAllowed: false };
+
+        internal static void TrackChestTransition(IClickableMenu oldMenu, IClickableMenu newMenu)
+        {
+            if (_returnChestMenu == null) return;
+            if (newMenu == _chestNote) return;
+            if (oldMenu == _chestNote && newMenu is JunimoNoteMenu next && FromInventory(next))
+            {
+                _chestNote = next;
+                SetReturnMenu(next, _returnChestMenu);
+                return;
+            }
+            bool returned = newMenu == _returnChestMenu;
+            ClearChestReturn();
+            if (returned) _returnTick = Game1.ticks;
+        }
+
+        // SwapPage constructs a fresh note and only copies gameMenuTabToReturnTo on PC.
+        private static void SwapPage_Postfix(JunimoNoteMenu __instance)
+        {
+            if (__instance == _chestNote && Game1.activeClickableMenu is JunimoNoteMenu next && next != __instance)
+            {
+                _chestNote = next;
+                SetReturnMenu(next, _returnChestMenu);
+            }
+        }
+
+        private static void SetReturnMenu(JunimoNoteMenu note, ItemGrabMenu chest)
+        {
+            if (ReturnMenu?.FieldType.IsInstanceOfType(chest) == true)
+                ReturnMenu.SetValue(note, chest);
+        }
+
+        internal static bool HandleChestNoteExit(IClickableMenu menu)
+        {
+            if (menu != _chestNote || _returnChestMenu == null || menu != Game1.activeClickableMenu) return false;
+            if (_backTick == Game1.ticks) return true;
+            if (GetSpecificBundlePage(_chestNote))
+            {
+                if (ClosePage == null) return false;
+                _backTick = Game1.ticks;
+                ClosePage.Invoke(_chestNote, null);
+            }
+            else ReturnToChest();
+            return true;
+        }
+
+        private static void ReturnToChest()
+        {
+            _returnTick = Game1.ticks;
+            Game1.activeClickableMenu = _returnChestMenu;
+            Game1.playSound("bigDeSelect");
+        }
+
         public static void Apply(Harmony harmony, IMonitor monitor)
         {
             Monitor = monitor;
+
+            if (SwapPage != null)
+                harmony.Patch(SwapPage, postfix: new HarmonyMethod(typeof(JunimoNoteMenuPatches), nameof(SwapPage_Postfix)));
 
             // Cache reflection
             _specificBundlePageField = AccessTools.Field(typeof(JunimoNoteMenu), "specificBundlePage");
@@ -113,16 +236,15 @@ namespace AndroidConsolizer.Patches
             );
 
             // leftClickHeld — block touch-sim drag feedback (green slots, item swell) when A is held
-            harmony.Patch(
-                original: AccessTools.Method(typeof(JunimoNoteMenu), nameof(JunimoNoteMenu.leftClickHeld)),
-                prefix: new HarmonyMethod(typeof(JunimoNoteMenuPatches), nameof(LeftClickHeld_Prefix))
-            );
+            var held = AccessTools.DeclaredMethod(typeof(JunimoNoteMenu), nameof(JunimoNoteMenu.leftClickHeld));
+            if (held != null)
+                harmony.Patch(held, prefix: new HarmonyMethod(typeof(JunimoNoteMenuPatches), nameof(LeftClickHeld_Prefix)));
 
-            // releaseLeftClick — null out presentButton after reward click to prevent double-redemption
-            harmony.Patch(
-                original: AccessTools.Method(typeof(JunimoNoteMenu), nameof(JunimoNoteMenu.releaseLeftClick)),
-                postfix: new HarmonyMethod(typeof(JunimoNoteMenuPatches), nameof(ReleaseLeftClick_Postfix))
-            );
+            var release = AccessTools.DeclaredMethod(typeof(JunimoNoteMenu), nameof(JunimoNoteMenu.releaseLeftClick));
+            if (release != null)
+                harmony.Patch(release,
+                    prefix: new HarmonyMethod(typeof(JunimoNoteMenuPatches), nameof(ReleaseLeftClick_Prefix)),
+                    postfix: new HarmonyMethod(typeof(JunimoNoteMenuPatches), nameof(ReleaseLeftClick_Postfix)));
 
             // receiveGamePadButton — handle navigation and A press
             harmony.Patch(
@@ -164,6 +286,8 @@ namespace AndroidConsolizer.Patches
             _inIngredientZone = false;
             _ingredientRows = null;
             _savedOverviewComponentId = -1;
+            _touchIngredient = null;
+            _lastUpdateError = null;
             _savedHighlightMethod = null;
             _greyoutInstalled = false;
             // Don't reset _rewardsMenuOpened/_pendingRewardIndices here —
@@ -187,17 +311,48 @@ namespace AndroidConsolizer.Patches
 
         private static bool ReceiveLeftClick_Prefix(JunimoNoteMenu __instance, int x, int y)
         {
-            // Allow clicks we initiated (HandleAPress, HandleIngredientAPress, HandleOverviewAPress)
-            if (_weInitiatedClick) return true;
-
             // Block touch-sim clicks while A is physically pressed.
             // On Android, every A press generates a synthetic receiveLeftClick at the real
             // mouse/touch position. Our A-handler already called receiveLeftClick with the
             // correct GetMouseState override, so this second click would hit a wrong position
             // and undo the donation (selectItemAt at random coords).
             var gpState = GamePad.GetState(Microsoft.Xna.Framework.PlayerIndex.One);
-            if (gpState.Buttons.A == ButtonState.Pressed)
+            if (!_weInitiatedClick && gpState.Buttons.A == ButtonState.Pressed)
                 return false;
+
+            if (__instance == _chestNote)
+            {
+                if (Game1.ticks == _openTick || (!_weInitiatedClick && GameplayButtonPatches.SuppressAUntilRelease)) return false;
+                _ignoreOpeningRelease = false;
+                if (__instance.upperRightCloseButton?.containsPoint(x, y) == true)
+                {
+                    ReturnToChest();
+                    return false;
+                }
+            }
+            if (GetSpecificBundlePage(__instance) && FromInventory(__instance))
+            {
+                if (BackButton?.GetValue(__instance) is ClickableComponent back && back.containsPoint(x, y))
+                {
+                    if (ClosePage == null) return true;
+                    ClosePage.Invoke(__instance, null);
+                    _touchIngredient = null;
+                    if (__instance == _chestNote) _ignoreOpeningRelease = true;
+                }
+                else if (__instance.upperRightCloseButton?.containsPoint(x, y) == true)
+                    return true;
+                else
+                {
+                    _touchIngredient = null;
+                    var ingredients = GetIngredientList(__instance);
+                    if (ingredients != null)
+                        foreach (var ingredient in ingredients)
+                            if (ingredient.bounds.Contains(x, y)) { _touchIngredient = ingredient; break; }
+                }
+                return false;
+            }
+            // Allow clicks we initiated (HandleAPress, HandleIngredientAPress, HandleOverviewAPress)
+            if (_weInitiatedClick) return true;
 
             // Block stale click when A opens the donation page from overview
             if (_onDonationPage && Game1.ticks - _enteredPageTick <= 3)
@@ -208,9 +363,13 @@ namespace AndroidConsolizer.Patches
 
         // ===== releaseLeftClick postfix — null presentButton after reward claimed (#41b) =====
 
+        private static bool ReleaseLeftClick_Prefix(JunimoNoteMenu __instance) =>
+            !(__instance == _chestNote && (_ignoreOpeningRelease || Game1.ticks == _openTick))
+            && !(GetSpecificBundlePage(__instance) && FromInventory(__instance));
+
         private static void ReleaseLeftClick_Postfix(JunimoNoteMenu __instance, int x, int y)
         {
-            if (_presentButtonField == null || !_onOverviewPage) return;
+            if (_presentButtonField == null || !_onOverviewPage || FromInventory(__instance)) return;
 
             var pb = _presentButtonField.GetValue(__instance) as ClickableComponent;
             if (pb != null && pb.containsPoint(x, y))
@@ -221,8 +380,10 @@ namespace AndroidConsolizer.Patches
 
         // ===== leftClickHeld prefix — block touch-sim drag feedback while A is held =====
 
-        private static bool LeftClickHeld_Prefix()
+        private static bool LeftClickHeld_Prefix(JunimoNoteMenu __instance)
         {
+            if ((__instance == _chestNote && _ignoreOpeningRelease) || (GetSpecificBundlePage(__instance) && FromInventory(__instance)))
+                return false;
             if (!_onDonationPage) return true;
 
             var gpState = GamePad.GetState(Microsoft.Xna.Framework.PlayerIndex.One);
@@ -234,11 +395,54 @@ namespace AndroidConsolizer.Patches
 
         // ===== receiveGamePadButton prefix =====
 
-        private static bool ReceiveGamePadButton_Prefix(JunimoNoteMenu __instance, Buttons b)
+        private static bool ReceiveGamePadButton_Prefix(JunimoNoteMenu __instance, [HarmonyArgument(0)] Buttons b)
         {
             try
             {
-                if (!GetSpecificBundlePage(__instance))
+                bool specific = GetSpecificBundlePage(__instance);
+                if (__instance == _chestNote)
+                {
+                    if (b == Buttons.LeftTrigger || b == Buttons.RightTrigger || Game1.ticks == _openTick) return false;
+                    if (!specific && b == Buttons.B)
+                    {
+                        if (_backTick != Game1.ticks) ReturnToChest();
+                        return false;
+                    }
+                    if (!specific && SwapPage != null && (b == Buttons.LeftShoulder || b == Buttons.RightShoulder))
+                    {
+                        SwapPage.Invoke(__instance, new object[] { b == Buttons.LeftShoulder ? -1 : 1 });
+                        return false;
+                    }
+                }
+                if (specific && ReadOnlyDetail(__instance))
+                {
+                    switch (b)
+                    {
+                        case Buttons.B:
+                            if (ClosePage == null) return true;
+                            _backTick = Game1.ticks;
+                            ClosePage.Invoke(__instance, null);
+                            return false;
+                        case Buttons.DPadLeft:
+                        case Buttons.LeftThumbstickLeft:
+                            NavigateIngredientZone(__instance, -1, 0);
+                            break;
+                        case Buttons.DPadRight:
+                        case Buttons.LeftThumbstickRight:
+                            NavigateIngredientZone(__instance, 1, 0);
+                            break;
+                        case Buttons.DPadUp:
+                        case Buttons.LeftThumbstickUp:
+                            NavigateIngredientZone(__instance, 0, -1);
+                            break;
+                        case Buttons.DPadDown:
+                        case Buttons.LeftThumbstickDown:
+                            NavigateIngredientZone(__instance, 0, 1);
+                            break;
+                    }
+                    return false;
+                }
+                if (!specific)
                 {
                     if (!_onOverviewPage) return true;
 
@@ -265,7 +469,7 @@ namespace AndroidConsolizer.Patches
                             return false;
                         case Buttons.LeftTrigger:
                         case Buttons.RightTrigger:
-                            if (!ModEntry.Config.UseBumpersInsteadOfTriggers && __instance.fromGameMenu)
+                            if (!ModEntry.Config.UseBumpersInsteadOfTriggers && FromInventory(__instance))
                             {
                                 // Triggers = GameMenu tab switching. Exit CC back to GameMenu.
                                 // Only when CC was opened FROM GameMenu (not by walking into room).
@@ -473,7 +677,7 @@ namespace AndroidConsolizer.Patches
                 int newPos = curPosInRow + dx;
                 if (newPos < 0)
                 {
-                    ExitIngredientZone(menu);
+                    if (!ReadOnlyDetail(menu)) ExitIngredientZone(menu);
                     return;
                 }
                 if (newPos >= _ingredientRows[curRow].Count)
@@ -614,6 +818,12 @@ namespace AndroidConsolizer.Patches
         {
             try
             {
+                if (FromInventory(__instance) && !Game1.options.gamepadControls)
+                {
+                    if (!GetSpecificBundlePage(__instance)) _touchIngredient = null;
+                    _onOverviewPage = _onDonationPage = false;
+                    return;
+                }
                 bool specificBundle = GetSpecificBundlePage(__instance);
 
                 // Overview page entry — populate allClickableComponents and wire neighbors
@@ -626,7 +836,7 @@ namespace AndroidConsolizer.Patches
                     if (InitOverviewNavigation(__instance))
                     {
                         _onOverviewPage = true;
-                        __instance.inventory.descriptionText = "";
+                        if (__instance.inventory != null) __instance.inventory.descriptionText = "";
                         // Sync highlightedBundle so the initial bundle animates immediately
                         if (__instance.currentlySnappedComponent != null)
                             SyncHighlightedBundle(__instance, __instance.currentlySnappedComponent);
@@ -656,8 +866,17 @@ namespace AndroidConsolizer.Patches
                     if (_maxSlotIndex < 0) _maxSlotIndex = 0;
 
                     BuildIngredientRows(__instance);
-                    SnapToSlot(__instance);
-                    InstallDonationGreyout(__instance);
+                    if (ReadOnlyDetail(__instance))
+                    {
+                        _inIngredientZone = true;
+                        _trackedIngredientIndex = 0;
+                        SnapToIngredient(__instance);
+                    }
+                    else
+                    {
+                        SnapToSlot(__instance);
+                        InstallDonationGreyout(__instance);
+                    }
                 }
                 else if (!specificBundle && _onDonationPage)
                 {
@@ -691,7 +910,11 @@ namespace AndroidConsolizer.Patches
             }
             catch (Exception ex)
             {
-                Monitor.Log($"[JunimoNote] Update error: {ex.Message}", LogLevel.Error);
+                if (ModEntry.Config?.VerboseLogging == true && _lastUpdateError != ex.Message)
+                {
+                    _lastUpdateError = ex.Message;
+                    Monitor.Log($"[JunimoNote] Update error: {ex.Message}", LogLevel.Debug);
+                }
             }
         }
 
@@ -737,11 +960,12 @@ namespace AndroidConsolizer.Patches
         {
             try
             {
+                if (FromInventory(__instance) && !Game1.options.gamepadControls) return;
                 ClickableComponent target = null;
 
                 if (_onDonationPage)
                 {
-                    if (__instance.purchaseButton != null)
+                    if (!_inIngredientZone && __instance.purchaseButton != null)
                     {
                         target = __instance.purchaseButton;
                     }
@@ -788,11 +1012,17 @@ namespace AndroidConsolizer.Patches
         {
             try
             {
+                if (FromInventory(__instance) && !Game1.options.gamepadControls)
+                {
+                    if (!string.IsNullOrEmpty(_touchIngredient?.hoverText) && GetSpecificBundlePage(__instance))
+                        IClickableMenu.drawHoverText(b, _touchIngredient.hoverText, Game1.smallFont);
+                    return;
+                }
                 ClickableComponent target = null;
 
                 if (_onDonationPage)
                 {
-                    if (__instance.purchaseButton != null)
+                    if (!_inIngredientZone && __instance.purchaseButton != null)
                     {
                         target = __instance.purchaseButton;
                     }
@@ -867,20 +1097,20 @@ namespace AndroidConsolizer.Patches
 
             // Add presentButton (reward gift) if it exists
             var presentBtn = _presentButtonField?.GetValue(menu) as ClickableComponent;
-            if (presentBtn != null)
+            if (presentBtn != null && !FromInventory(menu))
             {
                 if (presentBtn.myID < 0) presentBtn.myID = 105;
                 components.Add(presentBtn);
             }
 
-            var areaNext = AccessTools.Field(typeof(JunimoNoteMenu), "areaNextButton")?.GetValue(menu) as ClickableComponent;
-            if (areaNext != null)
+            var areaNext = NextRoom?.GetValue(menu) as ClickableComponent;
+            if (areaNext?.visible == true)
             {
                 if (areaNext.myID < 0) areaNext.myID = 5101;
                 components.Add(areaNext);
             }
-            var areaBack = AccessTools.Field(typeof(JunimoNoteMenu), "areaBackButton")?.GetValue(menu) as ClickableComponent;
-            if (areaBack != null)
+            var areaBack = PreviousRoom?.GetValue(menu) as ClickableComponent;
+            if (areaBack?.visible == true)
             {
                 if (areaBack.myID < 0) areaBack.myID = 5102;
                 components.Add(areaBack);
@@ -1195,7 +1425,11 @@ namespace AndroidConsolizer.Patches
 
         private static bool GetSpecificBundlePage(JunimoNoteMenu menu)
         {
-            try { return _specificBundlePageField != null && (bool)_specificBundlePageField.GetValue(menu); }
+            try
+            {
+                return _specificBundlePageField?.GetValue(menu) is bool specific
+                    ? specific : _currentPageBundleField?.GetValue(menu) is Bundle;
+            }
             catch { return false; }
         }
 

@@ -232,6 +232,7 @@ namespace AndroidConsolizer
             // Register events
             helper.Events.GameLoop.GameLaunched += this.OnGameLaunched;
             helper.Events.GameLoop.SaveLoaded += this.OnSaveLoaded;
+            helper.Events.GameLoop.ReturnedToTitle += (_, _) => ResetBundleMenus();
             helper.Events.Input.ButtonsChanged += this.OnButtonsChanged;
             helper.Events.GameLoop.UpdateTicking += this.OnUpdateTicking;
             helper.Events.GameLoop.UpdateTicked += this.OnUpdateTicked;
@@ -267,6 +268,7 @@ namespace AndroidConsolizer
         /// <summary>Raised after a save is loaded. Forces tool re-equip to fix first-use issue.</summary>
         private void OnSaveLoaded(object sender, StardewModdingAPI.Events.SaveLoadedEventArgs e)
         {
+            ResetBundleMenus();
             // Fix: On load, the tool at index 0 isn't fully "equipped" until you cycle through.
             // Force a re-equip by cycling the tool index.
             var player = Game1.player;
@@ -334,16 +336,24 @@ namespace AndroidConsolizer
                 Patches.OptionsPagePatches.OnOptionsPageClosed();
             }
 
-            // Fix snap navigation in ItemGrabMenu (chests, fishing treasure, etc.)
+            bool suspendedChest = Patches.JunimoNoteMenuPatches.IsSuspendedChest(e.OldMenu) && e.NewMenu is JunimoNoteMenu;
+            bool abandonedChest = e.OldMenu is JunimoNoteMenu && Patches.JunimoNoteMenuPatches.HasChestReturn
+                && !(e.NewMenu is JunimoNoteMenu) && !Patches.JunimoNoteMenuPatches.IsSuspendedChest(e.NewMenu);
+            if ((e.OldMenu is ItemGrabMenu && !suspendedChest) || abandonedChest)
+                Patches.ItemGrabMenuPatches.OnMenuClosed();
+
+            Patches.JunimoNoteMenuPatches.TrackChestTransition(e.OldMenu, e.NewMenu);
+            Patches.BundleIconPulsePatches.OnMenuChanged(e.OldMenu, e.NewMenu);
             if (Config.EnableConsoleChests && e.NewMenu is ItemGrabMenu itemGrabMenu)
             {
                 Patches.ItemGrabMenuPatches.FixSnapNavigation(itemGrabMenu);
-            }
-
-            // Clean up swap-held-item state when leaving chest menu
-            if (e.OldMenu is ItemGrabMenu)
-            {
-                Patches.ItemGrabMenuPatches.OnMenuClosed();
+                if (Patches.JunimoNoteMenuPatches.JustReturned) Patches.ItemGrabMenuPatches.OnBundleNoteReturned();
+                var icon = Patches.BundleIconPulsePatches.ForChest(itemGrabMenu)?.Icon;
+                if (Patches.JunimoNoteMenuPatches.JustReturned && Game1.options.gamepadControls && icon?.visible == true)
+                {
+                    itemGrabMenu.currentlySnappedComponent = icon;
+                    itemGrabMenu.snapCursorToCurrentSnappedComponent();
+                }
             }
 
             // Track CarpenterMenu open/close for grace period fix
@@ -378,9 +388,13 @@ namespace AndroidConsolizer
             {
                 Patches.GameMenuPatches.OnGameMenuOpened(newGameMenu);
             }
+        }
 
-            // Reset/refresh Community Center bundle icon pulsing across menu transitions
-            Patches.BundleIconPulsePatches.OnMenuChanged(e.OldMenu, e.NewMenu);
+        private static void ResetBundleMenus()
+        {
+            Patches.ItemGrabMenuPatches.ClearNavigation();
+            Patches.JunimoNoteMenuPatches.ClearChestReturn();
+            Patches.BundleIconPulsePatches.OnMenuChanged(null, null);
         }
 
         /// <summary>Raised at start of each tick, BEFORE Game.Update(). Enforces our trigger
