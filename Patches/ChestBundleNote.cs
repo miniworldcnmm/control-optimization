@@ -13,7 +13,6 @@ namespace AndroidConsolizer.Patches
     /// <summary>The scroll and touch selection belong to one open chest.</summary>
     internal sealed class ChestBundleNote
     {
-        internal const int ComponentId = 898;
         private const int Size = 64;
         private static readonly FieldInfo SourceItem = AccessTools.Field(typeof(ItemGrabMenu), "sourceItem");
         private static readonly FieldInfo NativeIcon = AccessTools.Field(typeof(ItemGrabMenu), "junimoNoteIcon");
@@ -21,9 +20,7 @@ namespace AndroidConsolizer.Patches
 
         internal readonly ItemGrabMenu Menu;
         internal readonly ClickableTextureComponent Icon;
-        private readonly bool _drawIcon;
         private ClickableComponent[] _sidebar = Array.Empty<ClickableComponent>();
-        private ClickableComponent _chestRow0Right;
         // Close, five sidebar buttons, and the two rectangular inventory grids.
         private readonly Rectangle[] _obstacles = new Rectangle[8];
         private Rectangle _safeArea;
@@ -37,16 +34,12 @@ namespace AndroidConsolizer.Patches
         private ChestBundleNote(ItemGrabMenu menu)
         {
             Menu = menu;
-            Icon = NativeIcon?.GetValue(menu) as ClickableTextureComponent;
-            if (Icon?.visible != true)
-            {
-                Icon = new ClickableTextureComponent(Rectangle.Empty, Game1.mouseCursors, new Rectangle(331, 374, 15, 14), 4f)
-                {
-                    hoverText = Game1.content.LoadString(@"Strings\UI:GameMenu_JunimoNote_Hover")
-                };
-                _drawIcon = true;
-            }
-            Icon.myID = ComponentId;
+            // A native scroll can open the Community Center on click. Hide it and
+            // draw a separate indicator that the game never registers for input.
+            if (NativeIcon?.GetValue(menu) is ClickableTextureComponent nativeIcon)
+                nativeIcon.visible = false;
+
+            Icon = new ClickableTextureComponent(Rectangle.Empty, Game1.mouseCursors, new Rectangle(331, 374, 15, 14), 4f);
         }
 
         internal static ChestBundleNote Create(ItemGrabMenu menu)
@@ -64,24 +57,17 @@ namespace AndroidConsolizer.Patches
 
         internal static bool IsAutoGrabber(Item item) => item?.QualifiedItemId == "(BC)165" || item?.Name == "Auto-Grabber";
 
-        internal void Wire(ClickableComponent chestRow0Right, ClickableComponent sortChest, ClickableComponent fill, ClickableComponent color,
+        internal void SetSidebarButtons(ClickableComponent sortChest, ClickableComponent fill, ClickableComponent color,
             ClickableComponent sortInventory, ClickableComponent trash)
         {
-            _chestRow0Right = chestRow0Right;
             _sidebar = new[] { sortChest, fill, color, sortInventory, trash };
             UpdateLayout();
-            var components = Menu.allClickableComponents;
-            if (components != null)
-            {
-                components.RemoveAll(c => c != Icon && c?.myID == ComponentId);
-                if (!components.Contains(Icon)) components.Add(Icon);
-            }
         }
 
         internal void UpdateLayout()
         {
-            var safe = Utility.getSafeArea();
             if (_sidebar.Length == 0) return;
+            var safe = Utility.getSafeArea();
             bool moved = _safeArea != safe;
             _safeArea = safe;
             void Obstacle(int index, Rectangle bounds)
@@ -95,57 +81,9 @@ namespace AndroidConsolizer.Patches
             Obstacle(7, GridBounds(Menu.inventory));
             if (moved) _position = FindPosition(safe, _obstacles);
             Icon.bounds = _position;
-            bool paletteOpen = Menu.chestColorPicker?.visible == true || ItemGrabMenuPatches.ColorPickerOpen;
+            bool paletteOpen = ItemGrabMenuPatches.IsColorPickerOpen(Menu);
             Icon.visible = !_position.IsEmpty && !(paletteOpen && OverlapsPalette())
                 && ModEntry.Config?.EnableConsoleChests == true && BundleIconPulsePatches.ShouldShowJunimoNoteIcon();
-            UpdateNavigation(Icon.visible && !paletteOpen);
-        }
-
-        private void UpdateNavigation(bool reachable)
-        {
-            var close = Menu.upperRightCloseButton;
-            var sortChest = _sidebar[0];
-            var fill = _sidebar[1];
-            var color = _sidebar[2];
-            bool leftOfSort = reachable && sortChest?.visible == true && Icon.bounds.Center.X < sortChest.bounds.Center.X;
-            bool fallback = reachable && !leftOfSort;
-
-            if (_chestRow0Right != null && sortChest != null)
-                _chestRow0Right.rightNeighborID = leftOfSort ? ComponentId : sortChest.myID;
-            if (sortChest != null)
-            {
-                sortChest.leftNeighborID = leftOfSort ? ComponentId : _chestRow0Right?.myID ?? -1;
-                sortChest.rightNeighborID = close?.myID ?? (fallback ? ComponentId : -1);
-                if (close != null) sortChest.upNeighborID = close.myID;
-            }
-            if (close != null)
-                close.downNeighborID = fallback ? ComponentId : (sortChest ?? fill)?.myID ?? -1;
-            if (fill != null)
-                fill.rightNeighborID = fallback && Icon.bounds.Center.X > fill.bounds.Center.X ? ComponentId : close?.myID ?? -1;
-            if (color != null)
-                color.rightNeighborID = fallback && Icon.bounds.Center.X > color.bounds.Center.X ? ComponentId : close?.myID ?? -1;
-
-            Icon.upNeighborID = close?.myID ?? -1;
-            Icon.rightNeighborID = leftOfSort ? sortChest.myID : -1;
-            if (leftOfSort)
-            {
-                Icon.leftNeighborID = _chestRow0Right?.myID ?? -1;
-                Icon.downNeighborID = (fill ?? color ?? _sidebar[3])?.myID ?? -1;
-                return;
-            }
-
-            ClickableComponent nearest = null, below = null;
-            foreach (var button in _sidebar)
-            {
-                if (button?.visible != true) continue;
-                int dy = button.bounds.Center.Y - _position.Center.Y;
-                if (nearest == null || Math.Abs(dy) < Math.Abs(nearest.bounds.Center.Y - _position.Center.Y))
-                    nearest = button;
-                if (dy > 0 && (below == null || button.bounds.Center.Y < below.bounds.Center.Y))
-                    below = button;
-            }
-            Icon.leftNeighborID = nearest?.myID ?? -1;
-            Icon.downNeighborID = (below ?? nearest)?.myID ?? -1;
         }
 
         private bool OverlapsPalette()
@@ -308,24 +246,10 @@ namespace AndroidConsolizer.Patches
 
         internal void DrawIcon(SpriteBatch b)
         {
-            if (!_drawIcon || _drawn || !Icon.visible || ModEntry.Config?.EnableConsoleChests != true) return;
+            if (_drawn || !Icon.visible || ModEntry.Config?.EnableConsoleChests != true) return;
             Icon.draw(b);
             _drawn = true;
         }
 
-        internal void DrawOverlay(SpriteBatch b)
-        {
-            if (!Icon.visible || ModEntry.Config?.EnableConsoleChests != true) return;
-            DrawIcon(b); // Fallback if neither InventoryMenu.draw overload ran.
-            bool snapped = Game1.options.gamepadControls && Menu.currentlySnappedComponent == Icon;
-            if (!snapped) return;
-            if (Menu.heldItem == null && ItemGrabMenuPatches.SwapHeldItem == null && Game1.player?.CursorSlotItem == null)
-                IClickableMenu.drawHoverText(b, Icon.hoverText, Game1.smallFont);
-            if (Game1.options.hardwareCursor) return;
-            var pointer = Icon.bounds.Center;
-            b.Draw(Game1.mouseCursors, new Vector2(pointer.X, pointer.Y),
-                Game1.getSourceRectForStandardTileSheet(Game1.mouseCursors, 44, 16, 16),
-                Color.White, 0f, Vector2.Zero, 4f + Game1.dialogueButtonScale / 150f, SpriteEffects.None, 1f);
-        }
     }
 }

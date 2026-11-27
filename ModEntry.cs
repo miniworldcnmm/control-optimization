@@ -336,24 +336,19 @@ namespace AndroidConsolizer
                 Patches.OptionsPagePatches.OnOptionsPageClosed();
             }
 
-            bool suspendedChest = Patches.JunimoNoteMenuPatches.IsSuspendedChest(e.OldMenu) && e.NewMenu is JunimoNoteMenu;
-            bool abandonedChest = e.OldMenu is JunimoNoteMenu && Patches.JunimoNoteMenuPatches.HasChestReturn
-                && !(e.NewMenu is JunimoNoteMenu) && !Patches.JunimoNoteMenuPatches.IsSuspendedChest(e.NewMenu);
-            if ((e.OldMenu is ItemGrabMenu && !suspendedChest) || abandonedChest)
+            // Clean up swap-held-item state when leaving chest menu
+            if (e.OldMenu is ItemGrabMenu)
+            {
                 Patches.ItemGrabMenuPatches.OnMenuClosed();
+            }
 
-            Patches.JunimoNoteMenuPatches.TrackChestTransition(e.OldMenu, e.NewMenu);
+            // Reset/refresh Community Center bundle icon pulsing across menu transitions
             Patches.BundleIconPulsePatches.OnMenuChanged(e.OldMenu, e.NewMenu);
+
+            // Fix snap navigation in ItemGrabMenu (chests, fishing treasure, etc.)
             if (Config.EnableConsoleChests && e.NewMenu is ItemGrabMenu itemGrabMenu)
             {
                 Patches.ItemGrabMenuPatches.FixSnapNavigation(itemGrabMenu);
-                if (Patches.JunimoNoteMenuPatches.JustReturned) Patches.ItemGrabMenuPatches.OnBundleNoteReturned();
-                var icon = Patches.BundleIconPulsePatches.ForChest(itemGrabMenu)?.Icon;
-                if (Patches.JunimoNoteMenuPatches.JustReturned && Game1.options.gamepadControls && icon?.visible == true)
-                {
-                    itemGrabMenu.currentlySnappedComponent = icon;
-                    itemGrabMenu.snapCursorToCurrentSnappedComponent();
-                }
             }
 
             // Track CarpenterMenu open/close for grace period fix
@@ -393,7 +388,6 @@ namespace AndroidConsolizer
         private static void ResetBundleMenus()
         {
             Patches.ItemGrabMenuPatches.ClearNavigation();
-            Patches.JunimoNoteMenuPatches.ClearChestReturn();
             Patches.BundleIconPulsePatches.OnMenuChanged(null, null);
         }
 

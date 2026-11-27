@@ -37,7 +37,8 @@ namespace AndroidConsolizer.Patches
         /// <summary>Whether the color picker is currently open and we're navigating swatches.</summary>
         private static bool _colorPickerOpen = false;
         internal static bool ColorPickerOpen => _colorPickerOpen;
-        private static bool _discardReturnTouch;
+        internal static bool IsColorPickerOpen(ItemGrabMenu menu) =>
+            menu?.chestColorPicker?.visible == true || (menu != null && menu == _wiredMenu && _colorPickerOpen);
         private static ItemGrabMenu _wiredMenu;
         private static ClickableComponent _navigationAnchor;
 
@@ -78,8 +79,9 @@ namespace AndroidConsolizer.Patches
         /// <summary>Read-only access to the active displacement-swap item for BundleIconPulsePatches.</summary>
         internal static Item SwapHeldItem => _swapHeldItem;
 
-        // Cached reflection fields for InventoryMenu sidebar buttons
+        // Cached reflection fields for chest and inventory sidebar buttons
         private static FieldInfo _organizeButtonField;
+        private static FieldInfo _chestOrganizeButtonField;
         private static FieldInfo _trashCanField;
 
         // Cached reflection for FillOutStacks method (add-to-existing-stacks)
@@ -101,6 +103,7 @@ namespace AndroidConsolizer.Patches
 
             // Cache reflection lookups for sidebar buttons and methods
             _organizeButtonField = AccessTools.Field(typeof(InventoryMenu), "organizeButton");
+            _chestOrganizeButtonField = AccessTools.Field(typeof(ItemGrabMenu), "organizeButton");
             _trashCanField = AccessTools.Field(typeof(InventoryMenu), "trashCan");
             _fillOutStacksMethod = AccessTools.Method(typeof(ItemGrabMenu), "FillOutStacks");
 
@@ -135,17 +138,11 @@ namespace AndroidConsolizer.Patches
                     prefix: new HarmonyMethod(typeof(ItemGrabMenuPatches), nameof(ReceiveLeftClick_Prefix))
                 );
 
-                foreach (string method in new[] { nameof(ItemGrabMenu.leftClickHeld), nameof(ItemGrabMenu.releaseLeftClick) })
-                {
-                    var signature = new[] { typeof(int), typeof(int) };
-                    var original = AccessTools.DeclaredMethod(typeof(ItemGrabMenu), method, signature)
-                        ?? AccessTools.DeclaredMethod(typeof(MenuWithInventory), method, signature);
-                    if (original != null)
-                    {
-                        string handler = method == nameof(ItemGrabMenu.leftClickHeld) ? nameof(ChestHeld_Prefix) : nameof(ContinueChestTouch_Prefix);
-                        harmony.Patch(original, prefix: new HarmonyMethod(typeof(ItemGrabMenuPatches), handler));
-                    }
-                }
+                // Record touch selection without intercepting the chest's drag handling.
+                var leftClickHeld = AccessTools.DeclaredMethod(typeof(ItemGrabMenu), nameof(ItemGrabMenu.leftClickHeld),
+                    new[] { typeof(int), typeof(int) });
+                if (leftClickHeld != null)
+                    harmony.Patch(leftClickHeld, prefix: new HarmonyMethod(typeof(ItemGrabMenuPatches), nameof(LeftClickHeld_Prefix)));
 
                 // Patch draw to render swap-held item at cursor position
                 harmony.Patch(
@@ -199,9 +196,13 @@ namespace AndroidConsolizer.Patches
                 // need (organizeButton, trashCan) aren't in that list,
                 // and IDs 105/106 are duplicated across chest/player.
                 // =====================================================
+                var note = BundleIconPulsePatches.ForChest(menu);
                 var sortChest = menu.ItemsToGrabMenu != null && _organizeButtonField != null
                     ? _organizeButtonField.GetValue(menu.ItemsToGrabMenu) as ClickableComponent
                     : null;                                              // ID 106, Y~86
+                // PC stores the upper organize button on ItemGrabMenu.
+                if (note != null)
+                    sortChest ??= _chestOrganizeButtonField?.GetValue(menu) as ClickableComponent;
                 var fillStacks = menu.fillStacksButton;                  // ID 12952
                 var colorToggle = menu.colorPickerToggleButton;          // ID 27346
                 var sortInv = menu.inventory != null && _organizeButtonField != null
@@ -365,12 +366,7 @@ namespace AndroidConsolizer.Patches
                 if (playerRow2Right != null && trashPlayer != null)
                     playerRow2Right.rightNeighborID = trashPlayer.myID;
 
-                var note = BundleIconPulsePatches.ForChest(menu);
-                if (note != null)
-                {
-                    note.Wire(chestRow0Right, sortChest, fillStacks, colorToggle, sortInv, trashPlayer);
-                    _sideButtonObjects.Add(note.Icon);
-                }
+                note?.SetSidebarButtons(sortChest, fillStacks, colorToggle, sortInv, trashPlayer);
 
                 // =====================================================
                 // Step 5: Verbose logging of final wiring
@@ -389,7 +385,6 @@ namespace AndroidConsolizer.Patches
                     LogWiring("Sort Inv", sortInv);
                     LogWiring("Trash Player", trashPlayer);
                     LogWiring("Close X", closeX);
-                    LogWiring("Bundle Note", note?.Icon);
                     LogWiring("Chest R0 rightmost", chestRow0Right);
                     LogWiring("Chest R1 rightmost", chestRow1Right);
                     LogWiring("Chest R2 rightmost", chestRow2Right);
@@ -662,8 +657,6 @@ namespace AndroidConsolizer.Patches
         /// pick up the item we just placed, making it appear "attached to the cursor."</summary>
         private static bool ReceiveLeftClick_Prefix(ItemGrabMenu __instance, int x, int y, bool playSound)
         {
-            if (JunimoNoteMenuPatches.JustReturned) return false;
-            _discardReturnTouch = false;
             // Allow clicks we initiated ourselves (side button clicks, color swatch clicks)
             if (_allowOurClick)
                 return true;
@@ -684,32 +677,17 @@ namespace AndroidConsolizer.Patches
                 }
             }
 
-            var note = BundleIconPulsePatches.ForChest(__instance);
-            if (note != null && ModEntry.Config.EnableConsoleChests)
-            {
-                if (!Game1.options.gamepadControls) note.RecordTouch(x, y);
-                if (note.Icon.bounds.Contains(x, y))
-                {
-                    note.UpdateLayout();
-                    if (!note.Icon.visible || !note.Icon.bounds.Contains(x, y)) return true;
-                    if (!_colorPickerOpen && __instance.chestColorPicker?.visible != true)
-                        JunimoNoteMenuPatches.OpenFromChest(__instance, controller: false);
-                    return false;
-                }
-            }
+            if (!Game1.options.gamepadControls)
+                BundleIconPulsePatches.ForChest(__instance)?.RecordTouch(x, y);
+
             return true;
         }
 
-        private static bool ChestHeld_Prefix(IClickableMenu __instance, int x, int y)
+        private static void LeftClickHeld_Prefix(ItemGrabMenu __instance, int x, int y)
         {
-            if (!ContinueChestTouch_Prefix(__instance)) return false;
-            if (__instance is ItemGrabMenu menu && !Game1.options.gamepadControls)
-                BundleIconPulsePatches.ForChest(menu)?.RecordTouch(x, y);
-            return true;
+            if (!Game1.options.gamepadControls)
+                BundleIconPulsePatches.ForChest(__instance)?.RecordTouch(x, y);
         }
-
-        private static bool ContinueChestTouch_Prefix(IClickableMenu __instance) =>
-            __instance is not ItemGrabMenu || (!JunimoNoteMenuPatches.JustReturned && !_discardReturnTouch);
 
         /// <summary>Prefix for exitThisMenu to block same-frame exit when B closes the color picker.
         /// The game's update loop processes B through a separate code path that reads gamepad state
@@ -717,8 +695,6 @@ namespace AndroidConsolizer.Patches
         /// This blocks one exitThisMenu call on the exact tick the picker was closed.</summary>
         private static bool ExitThisMenu_Prefix(IClickableMenu __instance)
         {
-            if (JunimoNoteMenuPatches.HandleChestNoteExit(__instance)) return false;
-            if (__instance is ItemGrabMenu && JunimoNoteMenuPatches.JustReturned) return false;
             if (__instance is ItemGrabMenu && Game1.ticks == _pickerClosedTick)
             {
                 _pickerClosedTick = -100; // one-shot: only block one call
@@ -748,7 +724,6 @@ namespace AndroidConsolizer.Patches
 
                 // Remap button based on configured button style
                 Buttons remapped = ButtonRemapper.Remap(b);
-                if (JunimoNoteMenuPatches.JustReturned && (remapped == Buttons.A || remapped == Buttons.B)) return false;
 
                 // Log all button presses in chest menu for debugging
                 if (ModEntry.Config.VerboseLogging)
@@ -858,13 +833,6 @@ namespace AndroidConsolizer.Patches
                     var snapped = __instance.currentlySnappedComponent;
                     if (snapped != null && _sideButtonObjects.Contains(snapped))
                     {
-                        var note = BundleIconPulsePatches.ForChest(__instance);
-                        if (snapped == note?.Icon)
-                        {
-                            if (note.Icon.visible) JunimoNoteMenuPatches.OpenFromChest(__instance, controller: true);
-                            return false;
-                        }
-
                         // --- Close X: simulate B press to close the chest ---
                         // Suppress A at GetState level until released so the overworld
                         // never sees A and can't reopen the chest via "interact."
@@ -1124,9 +1092,7 @@ namespace AndroidConsolizer.Patches
             if (ModEntry.Config.EnableConsoleChests && !__instance.shippingBin && !_colorPickerOpen
                 && __instance.allClickableComponents is { } components)
             {
-                var note = BundleIconPulsePatches.ForChest(__instance);
-                if (_wiredMenu != __instance || (_navigationAnchor != null && !components.Contains(_navigationAnchor))
-                    || (note != null && !components.Contains(note.Icon)))
+                if (_wiredMenu != __instance || (_navigationAnchor != null && !components.Contains(_navigationAnchor)))
                     FixSnapNavigation(__instance);
             }
 
@@ -2034,10 +2000,6 @@ namespace AndroidConsolizer.Patches
         {
             if (__instance.shippingBin || _restoreSnapID < 0) return;
 
-            var note = BundleIconPulsePatches.ForChest(__instance);
-            if (note != null && _restoreSnapID == ChestBundleNote.ComponentId
-                && __instance.allClickableComponents != null && !__instance.allClickableComponents.Contains(note.Icon))
-                FixSnapNavigation(__instance);
             var comp = __instance.getComponentWithID(_restoreSnapID);
             if (comp != null)
             {
@@ -2051,7 +2013,8 @@ namespace AndroidConsolizer.Patches
         /// <summary>Draw postfix — render swap-held item and controller tooltip.</summary>
         private static void Draw_Postfix(ItemGrabMenu __instance, SpriteBatch b)
         {
-            BundleIconPulsePatches.ForChest(__instance)?.DrawOverlay(b);
+            // Fallback if neither InventoryMenu.draw overload drew the scroll.
+            BundleIconPulsePatches.ForChest(__instance)?.DrawIcon(b);
             // --- Swap-held item rendering ---
             if (_swapHeldItem != null && ModEntry.Config.EnableConsoleChests)
             {
@@ -2241,15 +2204,8 @@ namespace AndroidConsolizer.Patches
             return height + 16; // small safety padding
         }
 
-        /// <summary>Called when the ItemGrabMenu closes. Returns any held swap item to its source.</summary>
-        internal static void OnBundleNoteReturned()
-        {
-            _discardReturnTouch = true;
-        }
-
         internal static void ClearNavigation()
         {
-            _discardReturnTouch = false;
             _wiredMenu = null;
             _navigationAnchor = _closeXButton = _colorToggleButton = null;
             _sideButtonObjects.Clear();
@@ -2257,6 +2213,7 @@ namespace AndroidConsolizer.Patches
             _restoreSnapID = -1;
         }
 
+        /// <summary>Called when the ItemGrabMenu closes. Returns any held swap item to its source.</summary>
         public static void OnMenuClosed()
         {
             ClearNavigation();

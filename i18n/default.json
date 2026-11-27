@@ -23,7 +23,7 @@
   "gmcm.style.switch": "Switch style",
   "gmcm.style.xbox": "Xbox/PS style",
   "gmcm.console-chests.name": "Console Chests",
-  "gmcm.console-chests.tooltip": "In chests, transfer full stacks with A, one item with Y (hold to repeat), sort with X, snap to Fill Stacks with RB, and navigate sidebar buttons and the color picker. Tap the Community Center scroll or press A on it to view bundles. It pulses for items still needed.",
+  "gmcm.console-chests.tooltip": "In chests, transfer full stacks with A, one item with Y (hold to repeat), sort with X, snap to Fill Stacks with RB, and navigate sidebar buttons and the color picker. The Community Center scroll pulses when you select an item that an unlocked bundle still needs.",
   "gmcm.console-shops.name": "Console Shops",
   "gmcm.console-shops.tooltip": "Buy with A, adjust purchase quantity with LB/RB, jump through items with the right stick, and sell full stacks with A or single items with Y on the sell tab.",
   "gmcm.console-animal-menu.name": "Console Animal Menu",

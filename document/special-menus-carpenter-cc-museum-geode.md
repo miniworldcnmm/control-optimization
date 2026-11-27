@@ -14,7 +14,6 @@
 2. **社区中心献祭菜单（`JunimoNoteMenu`）**：
    - **总览页**：十字键/摇杆在献祭包间空间导航，LB/RB 切换房间，按 A 进入捐赠页，返回时记忆上次所在献祭包位置；绘制自定义可见光标。
    - **捐赠页**：6 列背包网格完整导航，不符合当前献祭条件的物品置灰；按 A 捐赠物品；从最右列向右可切入所需材料清单查看提示，向左返回背包；金库献祭包支持对购买按钮按 A 付款。
-   - **只读浏览**：从背包或箱子打开卷轴时，手柄直接浏览材料清单，无法捐赠或支付金库款项。详情页按 B 或轻点返回箭头回到总览。从箱子打开时，在总览按 B 或轻点右上角 **×** 返回同一个箱子。
    - **奖励领取**：可导航至礼物盒按 A 打开奖励菜单，按 A 领取整组，屏蔽向奖励盒反向存入或误触发 Y 键，按 B 退出保留未领奖励。
 3. **博物馆捐赠与重排菜单（`MuseumMenu`）**：
    - 补绘 Android 隐藏的菜单光标，支持十字键选择背包内可捐赠古物/矿物并按 A 捐赠；支持博物馆重排模式下的全网格方向键移动与落位。
@@ -33,7 +32,6 @@
 
 - `ModEntry.OnMenuChanged` 在进出 `JunimoNoteMenu` 时调用 `OnMenuChanged()` 重置内部游标与房间状态。
 - 总览页补建 `allClickableComponents` 并布设空间邻接关系；捐赠页维护跟踪光标坐标，覆盖 `JunimoNoteMenu` 的 `receiveLeftClick`、`leftClickHeld`、`releaseLeftClick` 以及 `Mouse.GetState` / 输入层 `GetMouseState`（因 Android 原版 `receiveLeftClick` 忽略参数坐标而直接读取 `GetMouseState`），在按 A 时精准回传跟踪光标位置完成 `tryDepositItem` 或按钮点击。
-- 箱子卷轴调用原版只读构造路径，由游戏选择初始可见房间。切房产生新菜单实例时传递原箱子的返回引用；箱子来源的 LT/RT 不会跳转至游戏主菜单。返回时恢复箱子导航并隔离本次关闭输入，切换到无关菜单、读档或回标题时清理返回上下文。
 - 反射访问 `specificBundlePage`、`ingredientList`、`bundles`、`highlightedBundle`、`presentButton`、`whichArea`、`currentPageBundle`、`heldItem`。
 
 ### 2.3 博物馆（`MuseumMenuPatches`）
